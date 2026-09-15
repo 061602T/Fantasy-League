@@ -1,0 +1,7 @@
+# Data source: nflverse via the maintained nflreadpy package.
+# NOTE: the brief named nfl_data_py, but that package is abandoned (final 0.3.3)
+# and cannot reach current-season weekly stats. nflreadpy is nflverse's
+# maintained successor and returns official pre-computed stats for 2024-2026.
+nflreadpy>=0.1.5
+pandas>=1.5
+pyarrow>=15

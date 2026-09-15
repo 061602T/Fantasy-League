@@ -1,0 +1,8 @@
+# Runtime state lives outside git
+*.db
+*.db-wal
+*.db-shm
+.cache/
+__pycache__/
+*.pyc
+.env
