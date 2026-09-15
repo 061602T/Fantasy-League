@@ -87,6 +87,28 @@ def players_current_roster(season: int, eligible_status=("ACT",),
     return r[["entity_id", "name", "position", "team", "status"]].dropna(subset=["entity_id"])
 
 
+def latest_completed_week(season: int, refresh: bool = False) -> int:
+    """Highest regular-season NFL week whose games are all finished (0 if none).
+
+    Used by the tick loop to know when a new week is ready to score.
+    """
+    sch = schedules([season], refresh)
+    if "game_type" in sch.columns:
+        sch = sch[sch["game_type"] == "REG"]
+    if sch.empty or "home_score" not in sch.columns:
+        return 0
+    complete = [int(wk) for wk, grp in sch.groupby("week")
+                if len(grp) and grp["home_score"].notna().all()]
+    return max(complete) if complete else 0
+
+
+def refresh_season(season: int) -> None:
+    """Re-download the current season's tables so new results are picked up."""
+    player_stats([season], refresh=True)
+    team_stats([season], refresh=True)
+    schedules([season], refresh=True)
+
+
 def players(refresh: bool = False) -> pd.DataFrame:
     """Player metadata (name, position, team, id). Not season-scoped."""
     import nflreadpy as nfl

@@ -89,7 +89,17 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       threaded replies formed rivalries, and the one `quiet` GM stayed silent
       despite winning the biggest blowout. Persists to `chat_log`. Offline tests
       in `scripts/test_chat.py`.
-- [ ] 8. Tick-loop scheduler + check-in dashboard/digest
+- [x] **8. Tick-loop scheduler + check-in dashboard** — `ffl/tick.py` runs one
+      autonomous step: refresh real results, and when a new NFL week has
+      finished, score that league week, run waivers, and let the GMs react in
+      chat; every tick regenerates the dashboard, and an advancing tick backs
+      up. Idle ticks are cheap (no API) and safe to run hourly; catch-up is
+      automatic. `ffl/dashboard.py` renders a self-contained HTML check-in
+      (standings, latest matchups, recent moves, chat) that works in light/dark
+      and at phone width. Verified **live**: one tick scored week 1, resolved a
+      waiver, posted 14 chat lines, and wrote the dashboard. Offline tests in
+      `scripts/test_tick.py`. **Decided:** hourly tick (`FFL_TICK_INTERVAL`),
+      HTML dashboard.
 
 ## Layout
 
@@ -105,6 +115,8 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       rosters.py      shared roster/legality helpers (used by the market)
       market.py       trades (negotiation) + FAAB waivers, with Haiku gates
       chat.py         event-aware group chat (Haiku gate + Sonnet banter)
+      tick.py         one autonomous league step (score/waivers/chat/dashboard)
+      dashboard.py    self-contained HTML check-in dashboard
       backup.py       online SQLite backup helper (cron + post-draft one-off)
     scripts/
       show_pool.py      print the current draft pool
@@ -119,6 +131,8 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       test_market.py    offline tests for trades + waivers
       run_chat.py       generate live group-chat reactions to a week
       test_chat.py      offline tests for the group chat
+      run_tick.py       run the tick loop (one step, or --loop)
+      test_tick.py      offline tests for the tick loop + dashboard
       backup_db.py      cron / on-demand DB backup CLI
       test_backup.py    offline tests for the backup helper
 
@@ -132,7 +146,14 @@ gitignored `.env` (the SDK wrapper reads either):
 
     export ANTHROPIC_API_KEY=sk-ant-...      # or: echo 'ANTHROPIC_API_KEY=...' > .env
     python -m scripts.gen_personas           # generate + persist the 8 GM personas
+    python -m scripts.run_draft              # run the snake draft
+    python -m scripts.run_tick --loop        # then run the league (or cron --once)
     python -m scripts.test_personas          # offline logic tests (no API key needed)
+
+The tick loop drives everything after the draft: run `python -m scripts.run_tick`
+once per interval (hourly by default, `FFL_TICK_INTERVAL`) via cron, or with
+`--loop` under systemd. It scores completed weeks, runs waivers, posts chat, and
+rewrites the dashboard to `FFL_DASHBOARD_PATH` (default `~/ffl-data/dashboard.html`).
 
 ## Persistence & deployment (Raspberry Pi)
 
@@ -182,15 +203,21 @@ re-cloning) can never touch or orphan the live league.
   `temperature`/`top_p`/`top_k` (400 if sent) and assistant-message prefill
   (also 400). So all agent calls: pass no sampling params, request JSON via the
   system prompt and parse it (no prefill), and use `output_config={"effort":…}`
-  to tune thinking depth. Future steps must follow the same shape.
+  to tune thinking depth — but only for models that accept it (Haiku 4.5 rejects
+  `effort`, so `llm.gate()` omits it). Future steps must follow the same shape.
+- **Tick cadence:** hourly (`config.TICK_INTERVAL_SECONDS`, env `FFL_TICK_INTERVAL`).
+  Idle ticks are cheap no-ops; LLM spend only lands when a new NFL week completes.
+- **Check-in format:** a self-contained HTML dashboard regenerated each tick
+  (`ffl/dashboard.py`, `FFL_DASHBOARD_PATH`).
 - **API key on the managed cloud runtime:** the host reserves the name
   `ANTHROPIC_API_KEY`, so a value set under that name in the cloud env doesn't
   reach app code. Supply the key as `FFL_ANTHROPIC_API_KEY` (cloud env var) or
   in a local gitignored `.env`; `ffl/llm.py` reads either.
 
-## Open decisions (still not finalized)
+## Build complete
 
-- **Tick interval** for the continuous loop (needed at step 8). Rough cost at
-  hourly ticks with two-tier models is ~$10-20/mo without caching, less with
-  prompt caching on stable context — confirm against real usage.
-- **Dashboard/digest format** for checking in (needed at step 8).
+All 8 steps are built and verified against real data/API. The league runs
+itself: `run_tick` scores completed weeks, runs the market, posts chat, and
+refreshes the dashboard. Possible future work (not in the original brief):
+season playoffs/bracket, mid-week (not just post-week) market activity, and a
+push/email digest alongside the HTML dashboard.

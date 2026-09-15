@@ -35,6 +35,11 @@ DRAFT_ROUNDS = 15  # snake
 # which maps cleanly onto NFL weeks 1-14 (fantasy playoffs would be 15-17).
 REGULAR_SEASON_WEEKS = 14
 
+# Tick-loop cadence (seconds) for the continuous scheduler. Hourly by default;
+# most ticks are cheap no-ops -- LLM spend only happens when a new NFL week
+# completes. Override with FFL_TICK_INTERVAL.
+TICK_INTERVAL_SECONDS = int(os.environ.get("FFL_TICK_INTERVAL", "3600"))
+
 # --- Full-PPR offensive scoring (reference; nflverse already applies this) --
 # Kept here for documentation and for any custom recompute/audit.
 PPR_SCORING = {

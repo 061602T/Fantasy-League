@@ -190,8 +190,10 @@ def score_week(conn: sqlite3.Connection, week: int, season: int = None,
     for m in matchups:
         hp = team_week_score(conn, m["home_team_id"], week, points)
         ap = team_week_score(conn, m["away_team_id"], week, points)
+        # NULL winner on a tie (there is no team 0 to reference); a final status
+        # distinguishes a tie from an unplayed game.
         winner = (m["home_team_id"] if hp > ap
-                  else m["away_team_id"] if ap > hp else 0)  # 0 = tie
+                  else m["away_team_id"] if ap > hp else None)
         conn.execute(
             """UPDATE matchups SET home_points=?, away_points=?, winner_team_id=?,
                  status='final' WHERE matchup_id=?""",
@@ -220,7 +222,7 @@ def recompute_standings(conn: sqlite3.Connection) -> None:
         hp, ap = m["home_points"] or 0.0, m["away_points"] or 0.0
         agg[h]["pf"] += hp; agg[h]["pa"] += ap
         agg[a]["pf"] += ap; agg[a]["pa"] += hp
-        if m["winner_team_id"] == 0:
+        if m["winner_team_id"] is None:   # final + no winner = tie
             agg[h]["t"] += 1; agg[a]["t"] += 1
         elif m["winner_team_id"] == h:
             agg[h]["w"] += 1; agg[a]["l"] += 1

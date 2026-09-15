@@ -119,7 +119,7 @@ def week_summary(conn: sqlite3.Connection, week: int):
         scores[h], scores[a] = hp, ap
         win = m["winner_team_id"]
         margin = abs(hp - ap)
-        if win == 0:
+        if win is None:
             lines.append(f"{names[h]} tied {names[a]} {hp:.1f}-{ap:.1f}")
         else:
             lo = a if win == h else h
@@ -128,7 +128,7 @@ def week_summary(conn: sqlite3.Connection, week: int):
                          f"(by {margin:.1f})")
         for tid, mine, opp in ((h, hp, ap), (a, ap, hp)):
             other = a if tid == h else h
-            if win == 0:
+            if win is None:
                 involvement[tid] = f"you tied {names[other]} {mine:.1f}-{opp:.1f}"
             elif win == tid:
                 involvement[tid] = f"you WON {mine:.1f}-{opp:.1f} over {names[other]}"

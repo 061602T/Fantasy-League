@@ -116,7 +116,7 @@ CREATE TABLE IF NOT EXISTS matchups (
     away_team_id   INTEGER NOT NULL REFERENCES teams(team_id),
     home_points    REAL,
     away_points    REAL,
-    winner_team_id INTEGER REFERENCES teams(team_id),  -- NULL=unplayed, 0=tie
+    winner_team_id INTEGER REFERENCES teams(team_id),  -- NULL=unplayed; final+NULL=tie
     status         TEXT NOT NULL DEFAULT 'scheduled',  -- scheduled|final
     UNIQUE (week, home_team_id, away_team_id)
 );
