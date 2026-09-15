@@ -90,4 +90,12 @@ PROJECTION_WINDOW = 3
 POOL_TARGETS = {"QB": 16, "RB": 70, "WR": 90, "TE": 24, "K": 32, "DST": 32}
 
 # --- Paths -----------------------------------------------------------------
-CACHE_DIR = ".cache"  # downloaded nflverse parquet, gitignored
+CACHE_DIR = ".cache"       # downloaded nflverse parquet, gitignored
+DB_PATH = "league.db"      # SQLite runtime state, gitignored (lives outside git)
+
+# --- Waivers ---------------------------------------------------------------
+FAAB_BUDGET = 100          # season-long FAAB budget per team
+
+# --- Trades ----------------------------------------------------------------
+MAX_TRADE_ROUNDS = 3       # propose -> counter -> ... capped at 3 rounds
+MAX_COLLISION_ROUNDS = 3   # persona name-collision negotiation cap

@@ -34,7 +34,11 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       numbers on 98.5% of 2024 player-weeks (we ultimately use the official
       numbers directly); kicker/DST scoring spot-checked on real games;
       projection formula verified against manual calculation.
-- [ ] 2. Database schema (SQLite, WAL, FKs)
+- [x] **2. Database schema** — SQLite, WAL mode, foreign keys enforced. 10
+      tables (league, teams w/ persona fields, players, rosters, lineups,
+      draft_picks, transactions, matchups, player_weekly_scores, chat_log).
+      Verified: pragmas active, FK violations rejected, and the real 264-player
+      pool + 3,908 real weekly scores round-trip through it.
 - [ ] 3. Agent personas (generation + collision negotiation)
 - [ ] 4. Draft engine (snake, 15 rounds)
 - [ ] 5. Weekly scoring cycle
