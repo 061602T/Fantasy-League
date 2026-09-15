@@ -39,7 +39,14 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       draft_picks, transactions, matchups, player_weekly_scores, chat_log).
       Verified: pragmas active, FK violations rejected, and the real 264-player
       pool + 3,908 real weekly scores round-trip through it.
-- [ ] 3. Agent personas (generation + collision negotiation)
+- [~] **3. Agent personas** — each of the 8 GMs self-generates a persona via a
+      real Sonnet 5 call; duplicate team/GM names are negotiated in-character
+      (≤3 rounds, then a coin flip; loser rebrands), with the full transcript
+      written to `chat_log`. Teams persist to the `teams` table.
+      Offline-verified: collision negotiation (cede path + coin-flip path),
+      revision, and DB round-trip all pass (`scripts/test_personas.py`).
+      **Live real-API run still pending** — the container's `ANTHROPIC_API_KEY`
+      is not set, so `scripts/gen_personas.py` can't reach the API yet.
 - [ ] 4. Draft engine (snake, 15 rounds)
 - [ ] 5. Weekly scoring cycle
 - [ ] 6. Trade & waiver systems
@@ -53,13 +60,24 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       data.py         nflverse data access + local parquet cache
       scoring.py      offense (official PPR) + kicker + DST scoring
       projections.py  game logs, ROS projection, draft pool
+      llm.py          Anthropic SDK wrapper (Haiku gate / Sonnet decision tiers)
+      personas.py     persona generation, name-collision negotiation, persistence
     scripts/
-      show_pool.py    print the current draft pool
+      show_pool.py      print the current draft pool
+      gen_personas.py   generate + persist the 8 GM personas (real API calls)
+      test_personas.py  offline tests for the collision/persistence logic
 
 ## Setup
 
     pip install -r requirements.txt
     python -m scripts.show_pool
+
+Steps 3+ make real Claude API calls and need a key. Export it, or drop it in a
+gitignored `.env` (the SDK wrapper reads either):
+
+    export ANTHROPIC_API_KEY=sk-ant-...      # or: echo 'ANTHROPIC_API_KEY=...' > .env
+    python -m scripts.gen_personas           # generate + persist the 8 GM personas
+    python -m scripts.test_personas          # offline logic tests (no API key needed)
 
 ## Decisions locked in
 
