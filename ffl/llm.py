@@ -19,18 +19,35 @@ import os
 MODEL_GATE = "claude-haiku-4-5"
 MODEL_DECISION = "claude-sonnet-5"
 
+# Some hosts (e.g. Claude Code's managed runtime) reserve ANTHROPIC_API_KEY for
+# their own provider auth, so a value set under that exact name may not reach
+# app code. Setting the key under this alias instead is honoured here.
+_KEY_ALIAS = "FFL_ANTHROPIC_API_KEY"
+
 _client = None
 _dotenv_loaded = False
 
 
+def _resolve_key() -> str | None:
+    """Return the API key from the standard var, the alias, or a local .env."""
+    _load_dotenv_once()
+    key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get(_KEY_ALIAS)
+    if key and not os.environ.get("ANTHROPIC_API_KEY"):
+        # The SDK only looks at ANTHROPIC_API_KEY, so promote the alias.
+        os.environ["ANTHROPIC_API_KEY"] = key
+    return key
+
+
 def _load_dotenv_once() -> None:
-    """Best-effort load of a gitignored .env, only if the key isn't already set."""
+    """Best-effort load of a gitignored .env, only if no key is set yet."""
     global _dotenv_loaded
-    if _dotenv_loaded or os.environ.get("ANTHROPIC_API_KEY"):
+    if _dotenv_loaded:
+        return
+    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get(_KEY_ALIAS):
         _dotenv_loaded = True
         return
     try:
-        from dotenv import load_dotenv  # transitive dep; optional
+        from dotenv import load_dotenv  # optional convenience
         load_dotenv()
     except Exception:
         pass
@@ -47,12 +64,14 @@ def client():
     if _client is None:
         import anthropic
 
-        _load_dotenv_once()
-        if not os.environ.get("ANTHROPIC_API_KEY"):
+        if not _resolve_key():
             raise RuntimeError(
-                "ANTHROPIC_API_KEY is not set. Export it, or put it in a local "
-                ".env file (gitignored): ANTHROPIC_API_KEY=sk-ant-...\n"
-                "The league's agents need it to make real Claude API calls."
+                "No Anthropic API key found. The agents need one for real "
+                "Claude API calls. Provide it in any of these ways:\n"
+                f"  - set {_KEY_ALIAS} (use this if the host reserves "
+                "ANTHROPIC_API_KEY, e.g. Claude Code's cloud env),\n"
+                "  - export ANTHROPIC_API_KEY, or\n"
+                "  - put ANTHROPIC_API_KEY=sk-ant-... in a local .env (gitignored)."
             )
         _client = anthropic.Anthropic()
     return _client
