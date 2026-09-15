@@ -79,7 +79,16 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       in-character FAAB negotiation, and a contested waiver (higher bid won,
       loser kept its budget, add/drop executed). Offline tests in
       `scripts/test_market.py`.
-- [ ] 7. Event-aware group chat
+- [x] **7. Event-aware group chat** — GMs banter in a shared channel, reacting
+      in character to what just happened. A Haiku gate (weighted by each GM's
+      `chattiness`) decides who chimes in; Sonnet writes the line; a couple of
+      rounds let them reply to each other. `react_to_event(headline, detail,
+      involvement)` is generic (the tick loop can fire it for any event);
+      `react_to_week` builds the summary from real matchup results. Verified
+      **live** on week 1: GMs cited real scores/margins and the week high/low,
+      threaded replies formed rivalries, and the one `quiet` GM stayed silent
+      despite winning the biggest blowout. Persists to `chat_log`. Offline tests
+      in `scripts/test_chat.py`.
 - [ ] 8. Tick-loop scheduler + check-in dashboard/digest
 
 ## Layout
@@ -95,6 +104,7 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       season.py       schedule, lineups, weekly scoring, standings
       rosters.py      shared roster/legality helpers (used by the market)
       market.py       trades (negotiation) + FAAB waivers, with Haiku gates
+      chat.py         event-aware group chat (Haiku gate + Sonnet banter)
       backup.py       online SQLite backup helper (cron + post-draft one-off)
     scripts/
       show_pool.py      print the current draft pool
@@ -107,6 +117,8 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       test_season.py    offline tests for the scoring cycle
       run_market.py     run live trades / waivers (real API calls)
       test_market.py    offline tests for trades + waivers
+      run_chat.py       generate live group-chat reactions to a week
+      test_chat.py      offline tests for the group chat
       backup_db.py      cron / on-demand DB backup CLI
       test_backup.py    offline tests for the backup helper
 
