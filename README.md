@@ -71,12 +71,15 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       llm.py          Anthropic SDK wrapper (Haiku gate / Sonnet decision tiers)
       personas.py     persona generation, name-collision negotiation, persistence
       draft.py        snake-draft order, roster/needs logic, live pick decisions
+      backup.py       online SQLite backup helper (cron + post-draft one-off)
     scripts/
       show_pool.py      print the current draft pool
       gen_personas.py   generate + persist the 8 GM personas (real API calls)
       test_personas.py  offline tests for the collision/persistence logic
       run_draft.py      run the live snake draft (real API calls)
       test_draft.py     offline tests for the draft engine
+      backup_db.py      cron / on-demand DB backup CLI
+      test_backup.py    offline tests for the backup helper
 
 ## Setup
 
@@ -89,6 +92,37 @@ gitignored `.env` (the SDK wrapper reads either):
     export ANTHROPIC_API_KEY=sk-ant-...      # or: echo 'ANTHROPIC_API_KEY=...' > .env
     python -m scripts.gen_personas           # generate + persist the 8 GM personas
     python -m scripts.test_personas          # offline logic tests (no API key needed)
+
+## Persistence & deployment (Raspberry Pi)
+
+The runtime database is **not** in the git checkout, so pulling code updates (or
+re-cloning) can never touch or orphan the live league.
+
+- **Location:** `config.DB_PATH`, from `FFL_DB_PATH`, defaults to
+  `~/ffl-data/league.db` (dev and Pi alike). `db.connect()` creates the parent
+  directory and opens WAL + `synchronous=FULL` + foreign keys. On the Pi, set
+  `FFL_DB_PATH=/home/<user>/ffl-data/league.db` in the service env.
+- **Backups:** `python -m scripts.backup_db` writes a dated, self-contained,
+  integrity-checked snapshot via SQLite's online backup API (safe during writes;
+  no `sqlite3` CLI needed). Tunable by env: `FFL_BACKUP_DIR`
+  (default `~/ffl-data/backups`), `FFL_BACKUP_RETAIN_DAYS` (default 14).
+  Suggested Pi cron (retune once tick cadence is set):
+
+      0 */6 * * * cd /home/<user>/Fantasy-League && \
+        FFL_DB_PATH=/home/<user>/ffl-data/league.db /usr/bin/python3 \
+        -m scripts.backup_db >> /home/<user>/ffl-data/backup.log 2>&1
+
+  Point `FFL_BACKUP_DIR` at storage **off the SD card** (USB/network): WAL keeps
+  the DB uncorrupted at the SQLite layer through power loss, but physical SD-card
+  corruption is below SQLite and can take the file *and* same-card backups.
+- **One-off backups:** `run_draft.py` calls the backup helper immediately after
+  the draft, since 120 non-deterministic picks can't be regenerated identically.
+  Future one-shot events (e.g. season init) should do the same.
+- **Not an export/import feature:** backups only restore the same DB
+  byte-for-byte — there is no path to import test data into a real league.
+- **Startup integrity gate (planned, step 8):** the service should
+  `PRAGMA quick_check` on boot and refuse to run on a corrupt file, restoring the
+  newest verified backup instead. Helper not wired yet.
 
 ## Decisions locked in
 

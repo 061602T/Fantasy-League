@@ -10,6 +10,8 @@ nflverse, so we compute them here from official counting stats using the
 KICKER_SCORING and DST_SCORING tables below.
 """
 
+import os
+
 # --- League timeline -------------------------------------------------------
 # The current, in-progress NFL season the league is playing.
 SEASON = 2026
@@ -91,7 +93,11 @@ POOL_TARGETS = {"QB": 16, "RB": 70, "WR": 90, "TE": 24, "K": 32, "DST": 32}
 
 # --- Paths -----------------------------------------------------------------
 CACHE_DIR = ".cache"       # downloaded nflverse parquet, gitignored
-DB_PATH = "league.db"      # SQLite runtime state, gitignored (lives outside git)
+# SQLite runtime state. Deliberately OUTSIDE the git checkout so that pulling
+# code updates (or re-cloning) can never touch or orphan the live database.
+# Override with FFL_DB_PATH; defaults under the user's home for dev and the Pi.
+DB_PATH = os.environ.get(
+    "FFL_DB_PATH", os.path.expanduser(os.path.join("~", "ffl-data", "league.db")))
 
 # --- Waivers ---------------------------------------------------------------
 FAAB_BUDGET = 100          # season-long FAAB budget per team

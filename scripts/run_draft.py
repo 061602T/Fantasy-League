@@ -13,7 +13,7 @@ import sys, os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ffl import config, db, draft
+from ffl import backup, config, db, draft
 
 
 def main():
@@ -57,6 +57,18 @@ def main():
 
     print(f"\nDrafted {len(result['picks'])} players across "
           f"{config.NUM_TEAMS} teams.")
+
+    # A draft is 120 non-deterministic picks -- if the SD card dies before the
+    # next scheduled cron backup, it can't be regenerated identically. So take
+    # an immediate one-off backup here. (Do the same for other one-shot events,
+    # e.g. season init, when those land.) A backup failure must not fail the
+    # already-committed draft, so it's caught and reported.
+    try:
+        dest = backup.backup_db(db_path=args.db)
+        if dest:
+            print(f"Post-draft backup written: {dest}")
+    except Exception as e:  # noqa: BLE001 -- report, don't crash a done draft
+        print(f"WARNING: post-draft backup failed: {e}", file=sys.stderr)
     return 0
 
 

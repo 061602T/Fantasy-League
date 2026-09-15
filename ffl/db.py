@@ -18,6 +18,7 @@ Tables (per the brief):
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 
 from . import config
@@ -141,11 +142,23 @@ CREATE TABLE IF NOT EXISTS chat_log (
 
 
 def connect(path: str = None) -> sqlite3.Connection:
-    """Open a connection with WAL mode and foreign keys enforced."""
+    """Open a connection with WAL mode, full sync, and foreign keys enforced.
+
+    Creates the database's parent directory if needed (the DB lives outside the
+    git checkout). synchronous=FULL is set explicitly -- on a Pi that can lose
+    power, it keeps committed transactions durable and the file uncorrupted at
+    the SQLite layer (physical SD-card corruption is handled by off-card
+    backups, not this).
+    """
     path = path or config.DB_PATH
+    if path != ":memory:":
+        parent = os.path.dirname(os.path.abspath(path))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL;")
+    conn.execute("PRAGMA synchronous = FULL;")
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
 
