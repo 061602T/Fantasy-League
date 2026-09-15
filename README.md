@@ -66,7 +66,19 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       snapshot copy — real DB untouched). Lineups are deterministic (no API
       calls), so scoring is cheap and reproducible. Offline tests in
       `scripts/test_season.py`.
-- [ ] 6. Trade & waiver systems
+- [x] **6. Trade & waiver systems** — the league's first Sonnet-driven "real
+      decisions," gated by a cheap Haiku "do you want to act?" check.
+      **Trades:** a proposer builds an even N-for-N package (1–3 each way, rosters
+      stay 15); over ≤3 rounds the decider accepts, walks away, or counters by
+      haggling the FAAB sweetener (players fixed → counters stay unambiguous). A
+      deal executes only if both rosters stay legal and FAAB is affordable.
+      **Waivers:** one blind FAAB claim (add + drop) per team; resolved
+      highest-bid-first, tie-broken by remaining FAAB then draft slot; FAAB spent
+      only on a win. All movement persists to `transactions`/`rosters`; trade
+      talk + waiver results go to `chat_log`. Verified **live**: a full 3-round
+      in-character FAAB negotiation, and a contested waiver (higher bid won,
+      loser kept its budget, add/drop executed). Offline tests in
+      `scripts/test_market.py`.
 - [ ] 7. Event-aware group chat
 - [ ] 8. Tick-loop scheduler + check-in dashboard/digest
 
@@ -81,6 +93,8 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       personas.py     persona generation, name-collision negotiation, persistence
       draft.py        snake-draft order, roster/needs logic, live pick decisions
       season.py       schedule, lineups, weekly scoring, standings
+      rosters.py      shared roster/legality helpers (used by the market)
+      market.py       trades (negotiation) + FAAB waivers, with Haiku gates
       backup.py       online SQLite backup helper (cron + post-draft one-off)
     scripts/
       show_pool.py      print the current draft pool
@@ -91,6 +105,8 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       run_week.py       score one league week vs real data + print standings
       backtest_2025.py  score the drafted rosters over the finished 2025 season
       test_season.py    offline tests for the scoring cycle
+      run_market.py     run live trades / waivers (real API calls)
+      test_market.py    offline tests for trades + waivers
       backup_db.py      cron / on-demand DB backup CLI
       test_backup.py    offline tests for the backup helper
 

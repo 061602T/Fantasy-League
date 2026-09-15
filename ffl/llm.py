@@ -86,13 +86,24 @@ def _text_of(resp) -> str:
     return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
 
 
+def _effort_kwargs(model: str, effort) -> dict:
+    """output_config for effort, but only for models that accept it.
+
+    The gate-tier model (Haiku 4.5) rejects the effort parameter, so omit it
+    there (and whenever effort is None).
+    """
+    if effort is None or model == MODEL_GATE:
+        return {}
+    return {"output_config": {"effort": effort}}
+
+
 def chat_text(system: str, user: str, *, model: str = MODEL_DECISION,
               max_tokens: int = 2000, effort: str = "low") -> str:
     """Single-turn completion returning plain text."""
     resp = client().messages.create(
         model=model, max_tokens=max_tokens,
-        output_config={"effort": effort},
         system=system, messages=[{"role": "user", "content": user}],
+        **_effort_kwargs(model, effort),
     )
     return _text_of(resp).strip()
 
@@ -113,9 +124,9 @@ def chat_json(system: str, user: str, *, model: str = MODEL_DECISION,
     def _call(extra_system: str = "") -> str:
         resp = client().messages.create(
             model=model, max_tokens=max_tokens,
-            output_config={"effort": effort},
             system=system + _JSON_ONLY + extra_system,
             messages=[{"role": "user", "content": user}],
+            **_effort_kwargs(model, effort),
         )
         return _text_of(resp)
 
@@ -126,6 +137,20 @@ def chat_json(system: str, user: str, *, model: str = MODEL_DECISION,
         raw = _call("\n\nYour previous reply was not valid JSON. Output ONLY "
                     "the JSON object.")
         return json.loads(_extract_first_json_object(raw) or raw)
+
+
+def gate(system: str, user: str, *, model: str = MODEL_GATE,
+         max_tokens: int = 200) -> bool:
+    """Cheap 'do you want to act?' yes/no check via the gate-tier model.
+
+    Expects the prompt to ask for {"act": true|false}. Defaults to False (don't
+    act) on any parse trouble, so a flaky gate never forces an action.
+    """
+    try:
+        return bool(chat_json(system, user, model=model,
+                              max_tokens=max_tokens).get("act"))
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+        return False
 
 
 def _extract_first_json_object(s: str):
