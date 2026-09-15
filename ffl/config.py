@@ -31,6 +31,10 @@ BENCH_SPOTS = 6
 ROSTER_SIZE = 15
 DRAFT_ROUNDS = 15  # snake
 
+# Head-to-head regular season. 8 teams -> a double round-robin is 14 weeks,
+# which maps cleanly onto NFL weeks 1-14 (fantasy playoffs would be 15-17).
+REGULAR_SEASON_WEEKS = 14
+
 # --- Full-PPR offensive scoring (reference; nflverse already applies this) --
 # Kept here for documentation and for any custom recompute/audit.
 PPR_SCORING = {

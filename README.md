@@ -56,7 +56,16 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       endgame to mandatory starter positions. Verified **live**: 120 unique
       picks, contiguous overall order, all 8 teams finished with legal, full
       15-man rosters. Offline tests in `scripts/test_draft.py`.
-- [ ] 5. Weekly scoring cycle
+- [x] **5. Weekly scoring cycle** — balanced double round-robin schedule
+      (14 weeks), deterministic best-by-projection lineups, head-to-head scoring
+      from real per-player weekly points, and standings recomputed by
+      aggregating final matchups (re-scoring a week is idempotent). League week
+      N = NFL week N; scoring is parameterized by season. Verified **live** on
+      real 2026 week-1 results (4 matchups, realistic 150–194 pt totals) and via
+      a full **2025 backtest** (14 weeks scored on the drafted rosters, on a
+      snapshot copy — real DB untouched). Lineups are deterministic (no API
+      calls), so scoring is cheap and reproducible. Offline tests in
+      `scripts/test_season.py`.
 - [ ] 6. Trade & waiver systems
 - [ ] 7. Event-aware group chat
 - [ ] 8. Tick-loop scheduler + check-in dashboard/digest
@@ -71,6 +80,7 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       llm.py          Anthropic SDK wrapper (Haiku gate / Sonnet decision tiers)
       personas.py     persona generation, name-collision negotiation, persistence
       draft.py        snake-draft order, roster/needs logic, live pick decisions
+      season.py       schedule, lineups, weekly scoring, standings
       backup.py       online SQLite backup helper (cron + post-draft one-off)
     scripts/
       show_pool.py      print the current draft pool
@@ -78,6 +88,9 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       test_personas.py  offline tests for the collision/persistence logic
       run_draft.py      run the live snake draft (real API calls)
       test_draft.py     offline tests for the draft engine
+      run_week.py       score one league week vs real data + print standings
+      backtest_2025.py  score the drafted rosters over the finished 2025 season
+      test_season.py    offline tests for the scoring cycle
       backup_db.py      cron / on-demand DB backup CLI
       test_backup.py    offline tests for the backup helper
 
