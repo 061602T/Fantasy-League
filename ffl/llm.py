@@ -9,6 +9,11 @@ will also pull the key from a local ``.env`` file (which is gitignored), so a
 human can drop the key next to the code without exporting it. If no key is
 found, the error is raised at *call* time with a clear message -- importing
 this module never needs a key, so the offline logic tests still run.
+
+Targets the current Messages API (anthropic SDK 1.x): no ``temperature`` and no
+assistant prefill (both are rejected by Sonnet 5 and its generation). JSON is
+requested via the system prompt and parsed from the returned text; ``effort``
+(inside ``output_config``) controls thinking depth instead of sampling.
 """
 from __future__ import annotations
 
@@ -82,39 +87,44 @@ def _text_of(resp) -> str:
 
 
 def chat_text(system: str, user: str, *, model: str = MODEL_DECISION,
-              max_tokens: int = 1024, temperature: float = 1.0) -> str:
+              max_tokens: int = 2000, effort: str = "low") -> str:
     """Single-turn completion returning plain text."""
     resp = client().messages.create(
-        model=model, max_tokens=max_tokens, temperature=temperature,
+        model=model, max_tokens=max_tokens,
+        output_config={"effort": effort},
         system=system, messages=[{"role": "user", "content": user}],
     )
     return _text_of(resp).strip()
 
 
+_JSON_ONLY = ("\n\nReturn ONLY a single valid JSON object and nothing else: "
+              "no prose, no explanation, no markdown code fences.")
+
+
 def chat_json(system: str, user: str, *, model: str = MODEL_DECISION,
-              max_tokens: int = 1024, temperature: float = 1.0) -> dict:
+              max_tokens: int = 2000, effort: str = "low") -> dict:
     """Single-turn completion that returns a parsed JSON object.
 
-    Uses an assistant "{" prefill so the model is forced to emit JSON, then
-    extracts the first balanced object (models sometimes trail commentary).
-    Retries once with a stricter nudge if the first parse fails.
+    The current API rejects assistant prefills, so JSON is requested in the
+    system prompt and the first balanced {...} object is extracted from the
+    returned text (models sometimes wrap it in prose). Retries once with a
+    stricter nudge if the first parse fails.
     """
     def _call(extra_system: str = "") -> str:
         resp = client().messages.create(
-            model=model, max_tokens=max_tokens, temperature=temperature,
-            system=system + extra_system,
-            messages=[
-                {"role": "user", "content": user},
-                {"role": "assistant", "content": "{"},
-            ],
+            model=model, max_tokens=max_tokens,
+            output_config={"effort": effort},
+            system=system + _JSON_ONLY + extra_system,
+            messages=[{"role": "user", "content": user}],
         )
-        return "{" + _text_of(resp)
+        return _text_of(resp)
 
     raw = _call()
     try:
         return json.loads(_extract_first_json_object(raw) or raw)
     except (json.JSONDecodeError, TypeError):
-        raw = _call("\n\nReturn ONLY a single valid JSON object, nothing else.")
+        raw = _call("\n\nYour previous reply was not valid JSON. Output ONLY "
+                    "the JSON object.")
         return json.loads(_extract_first_json_object(raw) or raw)
 
 

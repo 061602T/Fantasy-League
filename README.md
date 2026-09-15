@@ -39,14 +39,15 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       draft_picks, transactions, matchups, player_weekly_scores, chat_log).
       Verified: pragmas active, FK violations rejected, and the real 264-player
       pool + 3,908 real weekly scores round-trip through it.
-- [~] **3. Agent personas** — each of the 8 GMs self-generates a persona via a
+- [x] **3. Agent personas** — each of the 8 GMs self-generates a persona via a
       real Sonnet 5 call; duplicate team/GM names are negotiated in-character
       (≤3 rounds, then a coin flip; loser rebrands), with the full transcript
       written to `chat_log`. Teams persist to the `teams` table.
-      Offline-verified: collision negotiation (cede path + coin-flip path),
-      revision, and DB round-trip all pass (`scripts/test_personas.py`).
-      **Live real-API run still pending** — the container's `ANTHROPIC_API_KEY`
-      is not set, so `scripts/gen_personas.py` can't reach the API yet.
+      Verified **live against the real API**: 8 distinct personas generated and
+      persisted (unique draft slots, valid `persona_json`), and a forced
+      collision drove a real 3-round negotiation → coin flip → in-character
+      rebrand. Collision/persistence logic also has offline tests
+      (`scripts/test_personas.py`, no key needed).
 - [ ] 4. Draft engine (snake, 15 rounds)
 - [ ] 5. Weekly scoring cycle
 - [ ] 6. Trade & waiver systems
@@ -90,7 +91,17 @@ gitignored `.env` (the SDK wrapper reads either):
 - **Model tiers (steps 3+):** Haiku 4.5 (`claude-haiku-4-5`) for the frequent
   "do you want to act?" gate-check; Sonnet 5 (`claude-sonnet-5`) for real
   decisions (draft picks, trades, chat, waiver bids). Uses the `anthropic`
-  SDK, reading `ANTHROPIC_API_KEY` from the environment.
+  SDK, reading `ANTHROPIC_API_KEY` from the environment (or `.env`, or the
+  `FFL_ANTHROPIC_API_KEY` alias — see below).
+- **Anthropic SDK 1.x API shape (`ffl/llm.py`):** this SDK generation removed
+  `temperature`/`top_p`/`top_k` (400 if sent) and assistant-message prefill
+  (also 400). So all agent calls: pass no sampling params, request JSON via the
+  system prompt and parse it (no prefill), and use `output_config={"effort":…}`
+  to tune thinking depth. Future steps must follow the same shape.
+- **API key on the managed cloud runtime:** the host reserves the name
+  `ANTHROPIC_API_KEY`, so a value set under that name in the cloud env doesn't
+  reach app code. Supply the key as `FFL_ANTHROPIC_API_KEY` (cloud env var) or
+  in a local gitignored `.env`; `ffl/llm.py` reads either.
 
 ## Open decisions (still not finalized)
 

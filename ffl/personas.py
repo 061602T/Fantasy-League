@@ -86,18 +86,20 @@ def _coerce_enum(value, allowed, default):
 
 # --- Generation ------------------------------------------------------------
 
-def generate_persona(vibe: str | None = None, *, temperature: float = 1.0) -> dict:
+def generate_persona(vibe: str | None = None) -> dict:
     """Generate one GM persona via a real Sonnet call. Returns a dict.
 
     The returned dict carries the structured fields plus everything the model
-    produced (kept verbatim for the teams.persona_json column).
+    produced (kept verbatim for the teams.persona_json column). Diversity across
+    the eight calls comes from the distinct vibe seeds (sampling params aren't
+    available on this API generation).
     """
     user = "Invent one fantasy football GM persona."
     if vibe:
         user += (f" Draw loose inspiration from this vibe: '{vibe}'. "
                  "Do not mention the vibe words literally.")
     data = llm.chat_json(_PERSONA_SYSTEM, user, model=llm.MODEL_DECISION,
-                         temperature=temperature)
+                         max_tokens=2500)
     return _normalize_persona(data)
 
 
@@ -218,8 +220,7 @@ def _collision_message(personas, idx, group, field, contested, rnd) -> dict:
         'Return JSON: {"message": "<what you say out loud>", '
         '"cede": true or false}.'
     )
-    data = llm.chat_json(system, user, model=llm.MODEL_DECISION,
-                         max_tokens=400, temperature=0.9)
+    data = llm.chat_json(system, user, model=llm.MODEL_DECISION, max_tokens=1200)
     return {"message": str(data.get("message", "")), "cede": bool(data.get("cede"))}
 
 
@@ -240,8 +241,7 @@ def _revise_name(personas, idx, field, contested, taken) -> dict:
         '"message": "<a short in-character reaction, 1 sentence>"}.'
     )
     for _ in range(4):
-        data = llm.chat_json(system, user, model=llm.MODEL_DECISION,
-                             max_tokens=300, temperature=1.0)
+        data = llm.chat_json(system, user, model=llm.MODEL_DECISION, max_tokens=1200)
         new_val = str(data.get("new_value", "")).strip()
         if new_val and _norm(new_val) not in taken:
             return {"new_value": new_val, "message": str(data.get("message", ""))}
