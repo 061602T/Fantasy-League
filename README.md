@@ -61,9 +61,22 @@ All downloads are cached as parquet under `.cache/` (gitignored).
     pip install -r requirements.txt
     python -m scripts.show_pool
 
-## Open decisions (flagged, not yet finalized)
+## Decisions locked in
 
-- **Kicker/DST scoring values:** using standard ESPN-style defaults
-  (`config.KICKER_SCORING`, `config.DST_SCORING`) — pending confirmation.
-- **Tick interval** for the continuous loop (needed at step 8).
+- **Data source:** `nflreadpy` (see above), not `nfl_data_py`.
+- **Kicker/DST scoring:** standard ESPN-style — distance-based FG (0-39=3,
+  40-49=4, 50+=5), and DST with points-allowed tiers. Confirmed; values in
+  `config.KICKER_SCORING` / `config.DST_SCORING`.
+- **Cold-start projections:** backfill from the prior season so there are
+  always 3 games to weight (`BACKFILL_SEASONS = [2025]`).
+- **Model tiers (steps 3+):** Haiku 4.5 (`claude-haiku-4-5`) for the frequent
+  "do you want to act?" gate-check; Sonnet 5 (`claude-sonnet-5`) for real
+  decisions (draft picks, trades, chat, waiver bids). Uses the `anthropic`
+  SDK, reading `ANTHROPIC_API_KEY` from the environment.
+
+## Open decisions (still not finalized)
+
+- **Tick interval** for the continuous loop (needed at step 8). Rough cost at
+  hourly ticks with two-tier models is ~$10-20/mo without caching, less with
+  prompt caching on stable context — confirm against real usage.
 - **Dashboard/digest format** for checking in (needed at step 8).
