@@ -48,7 +48,14 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       collision drove a real 3-round negotiation → coin flip → in-character
       rebrand. Collision/persistence logic also has offline tests
       (`scripts/test_personas.py`, no key needed).
-- [ ] 4. Draft engine (snake, 15 rounds)
+- [x] **4. Draft engine** — 15-round, 8-team snake draft (120 picks). Each pick
+      is a real Sonnet decision by that team's GM: it sees its persona, current
+      roster, remaining lineup needs, and a menu of the best available players,
+      and picks one in character (quip written to `chat_log`). Two guards keep
+      every roster legal — position caps and a must-fill rule that restricts the
+      endgame to mandatory starter positions. Verified **live**: 120 unique
+      picks, contiguous overall order, all 8 teams finished with legal, full
+      15-man rosters. Offline tests in `scripts/test_draft.py`.
 - [ ] 5. Weekly scoring cycle
 - [ ] 6. Trade & waiver systems
 - [ ] 7. Event-aware group chat
@@ -63,10 +70,13 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       projections.py  game logs, ROS projection, draft pool
       llm.py          Anthropic SDK wrapper (Haiku gate / Sonnet decision tiers)
       personas.py     persona generation, name-collision negotiation, persistence
+      draft.py        snake-draft order, roster/needs logic, live pick decisions
     scripts/
       show_pool.py      print the current draft pool
       gen_personas.py   generate + persist the 8 GM personas (real API calls)
       test_personas.py  offline tests for the collision/persistence logic
+      run_draft.py      run the live snake draft (real API calls)
+      test_draft.py     offline tests for the draft engine
 
 ## Setup
 
