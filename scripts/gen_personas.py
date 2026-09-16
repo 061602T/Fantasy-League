@@ -14,7 +14,21 @@ import sys, os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ffl import config, db, personas
+from ffl import backup, config, db, personas
+
+
+def _preflight(dbp):
+    """Integrity gate: verify the DB (restore from backup if corrupt) before use.
+    Returns True to proceed, False to abort."""
+    try:
+        status = db.preflight(dbp)
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        return False
+    if status.startswith("restored:"):
+        print(f"NOTE: database was corrupt on startup; restored from "
+              f"{status.split(':', 1)[1]}")
+    return True
 
 
 def main():
@@ -25,6 +39,8 @@ def main():
                     help="regenerate even if teams already exist")
     args = ap.parse_args()
 
+    if not _preflight(args.db):
+        return 1
     conn = db.init_db(args.db)
     existing = conn.execute("SELECT COUNT(*) FROM teams").fetchone()[0]
     if existing and not args.force:
@@ -64,6 +80,16 @@ def main():
         "OR event_type='system'").fetchone()[0]
     print(f"\nPersisted {len(result['team_ids'])} teams; "
           f"{logged} negotiation messages written to chat_log.")
+
+    # The personas are a non-reproducible, real-API creation (8 personas + any
+    # negotiation transcript), so take an immediate backup -- this is also the
+    # restore point that protects the gap before the draft runs.
+    try:
+        dest = backup.backup_db(db_path=args.db)
+        if dest:
+            print(f"Post-generation backup written: {dest}")
+    except Exception as e:  # noqa: BLE001 -- report, don't fail a done creation
+        print(f"WARNING: post-generation backup failed: {e}", file=sys.stderr)
     return 0
 
 

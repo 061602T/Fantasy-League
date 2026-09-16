@@ -48,6 +48,17 @@ def main():
                     help="skip re-downloading current-season data this tick")
     args = ap.parse_args()
 
+    # Integrity gate: verify the DB (restoring the newest good backup if it is
+    # corrupt) before opening it. Runs once at startup, before the loop.
+    try:
+        status = db.preflight(args.db)
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    if status.startswith("restored:"):
+        print(f"NOTE: database was corrupt on startup; restored from "
+              f"{status.split(':', 1)[1]}")
+
     conn = db.init_db(args.db)
     if not args.loop:
         result = one_tick(conn, args.no_refresh, args.db)

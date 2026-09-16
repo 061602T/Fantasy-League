@@ -22,6 +22,15 @@ def main():
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
 
+    try:
+        status = db.preflight(args.db)
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    if status.startswith("restored:"):
+        print(f"NOTE: database was corrupt on startup; restored from "
+              f"{status.split(':', 1)[1]}")
+
     conn = db.init_db(args.db)
     n_teams = conn.execute("SELECT COUNT(*) FROM teams").fetchone()[0]
     if n_teams < config.NUM_TEAMS:
