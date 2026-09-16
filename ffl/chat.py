@@ -57,7 +57,8 @@ def _compose(conn, team, headline, detail, involvement, recent) -> str | None:
     system = (f"You are {team['gm_name']}, GM of \"{team['team_name']}\", in the "
               f"league group chat. Persona: {team['personality']} Chattiness: "
               f"{team['chattiness']}. Write like a real person in a group chat: "
-              f"1-2 sentences, in character, no narration or quotation marks.")
+              f"1-2 sentences, in character, no narration or quotation marks."
+              + llm.VOICE)
     user = (f"What just happened: {headline}\n{detail}\n\n"
             f"Your angle: {involvement or 'not directly involved'}\n"
             f"Recent chat:\n{recent}\n\n"

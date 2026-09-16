@@ -51,6 +51,13 @@ You are inventing a vivid, memorable persona for a general manager (GM) in an \
 personality -- opinions, a voice, quirks. Avoid generic sports cliches and \
 avoid real NFL people. Make this GM distinct.
 
+This is a real fantasy league, so these characters trash-talk. A persona can be \
+cocky, crude, and foul-mouthed (mild profanity is fine) if that's who they are \
+-- don't make everyone corporate-polite. Keep the edge about football and team \
+management; never build in slurs, hate speech, or attacks on people's real \
+lives. Their catchphrase should sound like something a real person would \
+actually post in a league group chat.
+
 Return a JSON object with exactly these fields:
   "team_name":       the franchise name -- punchy, 1-4 words, no year/number.
   "gm_name":         the GM's name (a fictional person's full name).
@@ -210,6 +217,7 @@ def _collision_message(personas, idx, group, field, contested, rnd) -> dict:
         f"You are {me['gm_name']}, GM of \"{me['team_name']}\". "
         f"Persona: {me['personality']} Chattiness: {me['chattiness']}.\n"
         f"Speak in character, in the first person, in 1-2 sentences."
+        + llm.VOICE
     )
     user = (
         f'You and {", ".join(rivals)} independently picked the same {kind}: '
@@ -231,6 +239,7 @@ def _revise_name(personas, idx, field, contested, taken) -> dict:
     system = (
         f"You are {me['gm_name']}, GM of \"{me['team_name']}\". "
         f"Persona: {me['personality']}\nStay in character."
+        + llm.VOICE
     )
     used = ", ".join(sorted(_denorm_sample(personas, field)))
     user = (

@@ -71,7 +71,9 @@ def test_full_legal_draft():
         return menu.iloc[0]["entity_id"], "chalk"
     draft.choose_pick = greedy
 
-    result = draft.run_draft(conn, pool=_synthetic_pool())
+    # banter_prob=0: the draft-day reaction path calls the (unstubbed) chat
+    # model, so it's switched off for this offline invariant test.
+    result = draft.run_draft(conn, pool=_synthetic_pool(), banter_prob=0)
     picks = result["picks"]
     assert len(picks) == 120
 
@@ -96,6 +98,46 @@ def test_full_legal_draft():
     print("ok: full draft (120 unique picks, 8 legal 15-man rosters, all persisted)")
 
 
+def test_draft_banter_fires_and_is_gated():
+    """The draft-reaction hook is prob-gated and targets rival GMs only."""
+    import random as _random
+    conn = db.init_db(":memory:")
+    _seed_league(conn)
+
+    def greedy(team, rnd, overall, picks_left, roster_str, holes, menu):
+        return menu.iloc[0]["entity_id"], "chalk"
+    draft.choose_pick = greedy
+
+    # Stub the chat reaction so no API is touched; record every invocation.
+    calls = []
+    def fake_react(conn, headline, detail, involvement=None, rounds=2,
+                   team_ids=None, use_gate=True):
+        calls.append({"headline": headline, "detail": detail,
+                      "involvement": involvement or {}, "team_ids": team_ids})
+        return []
+    draft.chat.react_to_event = fake_react
+
+    # banter_prob=0 -> never fires.
+    draft.run_draft(conn, pool=_synthetic_pool(), banter_prob=0,
+                    rng=_random.Random(1))
+    assert calls == [], "banter fired despite prob 0"
+
+    # banter_prob=1 -> fires on every pick; reactors exclude the picker, and
+    # the picker is flagged in the involvement map ("this was YOUR pick").
+    conn2 = db.init_db(":memory:")
+    _seed_league(conn2)
+    draft.run_draft(conn2, pool=_synthetic_pool(), banter_prob=1,
+                    rng=_random.Random(1), use_gate=False)
+    assert len(calls) == 120, f"expected a reaction per pick, got {len(calls)}"
+    for c in calls:
+        picker_ids = [tid for tid, note in c["involvement"].items()
+                      if note == "this was YOUR pick"]
+        assert len(picker_ids) == 1, c["involvement"]
+        assert picker_ids[0] not in (c["team_ids"] or []), "picker reacted to self"
+        assert c["team_ids"], "no rival reactors chosen"
+    print("ok: draft banter is probability-gated and targets rivals, not self")
+
+
 def test_must_fill_guard():
     # A team that already has everything but K/DST, with only 2 picks left,
     # must be restricted to K and DST.
@@ -112,6 +154,7 @@ def main():
     test_snake_order()
     test_must_fill_guard()
     test_full_legal_draft()
+    test_draft_banter_fires_and_is_gated()
     print("\nALL OFFLINE DRAFT TESTS PASSED")
     return 0
 

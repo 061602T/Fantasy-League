@@ -176,7 +176,8 @@ def propose_offer(conn, a_id, b_id, proj_map) -> dict | None:
     system = (f"You are {ta['gm_name']}, GM of \"{ta['team_name']}\". Persona: "
               f"{ta['personality']} Valuation quirk: {ta['valuation_bias']}. "
               f"You have ${ta['faab_remaining']} FAAB. Propose trades in character "
-              f"but only ones that genuinely help your team.")
+              f"but only ones that genuinely help your team."
+              + llm.VOICE)
     user = (
         f"You want to propose a trade to {tb['gm_name']} ({tb['team_name']}).\n"
         f"YOUR players (A#):\n{at}\n\nTHEIR players (B#):\n{bt}\n\n"
@@ -218,7 +219,8 @@ def evaluate_offer(conn, decider_id, offer, rnd, proj_map) -> dict:
         "SELECT faab_remaining FROM teams WHERE team_id=?", (other,)).fetchone()[0]
     system = (f"You are {t['gm_name']}, GM of \"{t['team_name']}\". Persona: "
               f"{t['personality']} Risk: {t['risk_tolerance']}. Decide in "
-              f"character but protect your team's value.")
+              f"character but protect your team's value."
+              + llm.VOICE)
     user = (
         f"Trade round {rnd} of {MAX_TRADE_ROUNDS}. Offer on the table (the "
         f"players are FIXED -- you may only haggle over FAAB):\n"

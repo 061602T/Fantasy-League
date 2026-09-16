@@ -53,6 +53,14 @@ PLAYOFF_TEAMS = 4
 MIDWEEK_TRADE_PROB = float(os.environ.get("FFL_MIDWEEK_TRADE_PROB", "0.08"))
 MIDWEEK_CHAT_PROB = float(os.environ.get("FFL_MIDWEEK_CHAT_PROB", "0.12"))
 
+# --- Draft-day chatter -----------------------------------------------------
+# Per-pick probability that a notable pick draws live reactions from a few
+# rival GMs (a reach, a steal, or grabbing a position a rival also needs).
+# Kept low on purpose: at 120 picks this is ~10-15 reaction moments, not one
+# per pick, so the draft stays lively without 120x the noise/cost. The Haiku
+# gate still decides whether each chosen rival actually chimes in.
+DRAFT_CHAT_PROB = float(os.environ.get("FFL_DRAFT_CHAT_PROB", "0.12"))
+
 # --- Full-PPR offensive scoring (reference; nflverse already applies this) --
 # Kept here for documentation and for any custom recompute/audit.
 PPR_SCORING = {
