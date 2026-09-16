@@ -85,10 +85,44 @@ def test_dashboard_has_content():
     print("ok: dashboard renders standings + both themes")
 
 
+def test_championship_backup():
+    import glob
+    from scripts.test_playoffs import _seed as seed_playoffs
+    with tempfile.TemporaryDirectory() as tmp:
+        dbp = os.path.join(tmp, "league.db")
+        bdir = os.path.join(tmp, "backups")
+        conn = db.init_db(dbp)
+        tids, proj = seed_playoffs(conn)
+        season.build_schedule(conn)
+        for wk in range(1, 15):                 # play out the regular season
+            season.score_week(conn, wk, 2026, proj_map=proj)
+        conn.execute("UPDATE league SET current_week=14 WHERE id=1")
+        conn.commit()
+
+        common = dict(sync=False, refresh=False, latest_completed=16,
+                      do_market=False, do_chat=False, do_midweek=False,
+                      make_dashboard=False, make_digest=False, db_path=dbp,
+                      proj_map=proj)
+        os.environ["FFL_BACKUP_DIR"] = bdir
+        try:
+            r1 = tick.run_tick(conn, **common)   # crowns the champion
+            after_first = len(glob.glob(os.path.join(bdir, "league-*.db")))
+            r2 = tick.run_tick(conn, **common)   # already complete
+        finally:
+            os.environ.pop("FFL_BACKUP_DIR", None)
+
+        assert r1["champion"] is not None
+        assert any("championship backup" in e for e in r1["events"]), r1["events"]
+        assert after_first >= 1, "no championship backup file written"
+        assert not any("championship backup" in e for e in r2["events"]), r2["events"]
+    print("ok: championship backup taken once at crowning, not repeated")
+
+
 def main():
     test_tick_advances_then_idles()
     test_no_league_is_safe()
     test_dashboard_has_content()
+    test_championship_backup()
     print("\nALL OFFLINE TICK TESTS PASSED")
     return 0
 

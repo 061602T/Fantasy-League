@@ -4,8 +4,9 @@ Kept deliberately provider-agnostic: the tick writes the digest to a file and,
 if configured, delivers it. Wire it to any push/email channel with one env var:
 
   FFL_DIGEST_WEBHOOK   POST the digest text to this URL (ntfy, Slack, a webhook)
-  FFL_DIGEST_CMD       run this shell command with the digest on stdin
-                       (e.g. 'mail -s "FFL" me@x', 'ntfy publish mytopic')
+  FFL_DIGEST_CMD       run this shell command with the digest on stdin, e.g.
+                       'python3 -m scripts.send_digest_email' (Gmail SMTP),
+                       'mail -s "FFL" me@x', or 'ntfy publish mytopic'
 
 No third-party dependency and no hardcoded service, so it works on a headless
 Pi however the owner already gets notifications.

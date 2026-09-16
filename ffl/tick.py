@@ -98,10 +98,11 @@ def run_tick(conn: sqlite3.Connection, *, sync: bool = True, refresh: bool = Tru
                 events.append(f"week {wk}: {len(posts)} chat posts")
 
     # Playoffs: build/score the bracket once the regular season is complete.
-    playoff_events = []
+    playoff_events, newly_crowned = [], False
     if do_playoffs and playoffs.regular_season_complete(conn):
         pr = playoffs.advance(conn, latest_completed, year, proj_map=proj_map)
         playoff_events = pr["events"]
+        newly_crowned = pr.get("newly_crowned", False)
         events.extend(playoff_events)
 
     advanced = bool(weeks_scored) or bool(playoff_events)
@@ -122,7 +123,19 @@ def run_tick(conn: sqlite3.Connection, *, sync: bool = True, refresh: bool = Tru
 
     dash = dashboard.write(conn, dash_path) if make_dashboard else None
 
-    if advanced and backup_after:
+    # Backups. Crowning a champion is a non-reproducible, high-value event, so
+    # take a dedicated explicit snapshot the moment it happens (like the
+    # post-draft backup) rather than relying only on the routine/cron backup.
+    # Any other advancing tick still gets the routine backup.
+    did_backup = False
+    if newly_crowned and backup_after:
+        try:
+            backup.backup_db(db_path=db_path or config.DB_PATH)
+            events.append("championship backup taken")
+            did_backup = True
+        except Exception as e:  # noqa: BLE001 -- never fail a tick on backup
+            events.append(f"WARNING: championship backup failed: {e}")
+    if advanced and backup_after and not did_backup:
         try:
             backup.backup_db(db_path=db_path or config.DB_PATH)
         except Exception as e:  # noqa: BLE001 -- never fail a tick on backup

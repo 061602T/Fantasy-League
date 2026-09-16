@@ -139,12 +139,17 @@ def advance(conn: sqlite3.Connection, latest_completed: int,
                 break  # data for this round isn't in yet
 
     champ = champion(conn)
+    newly_crowned = False
     if champ is not None:
-        conn.execute("UPDATE league SET status='complete' WHERE id=1")
-        conn.commit()
-        name = conn.execute("SELECT team_name FROM teams WHERE team_id=?",
-                            (champ,)).fetchone()["team_name"]
-        events.append(f"CHAMPION: {name}")
+        already = conn.execute(
+            "SELECT status FROM league WHERE id=1").fetchone()["status"]
+        if already != "complete":       # only on the transition, not every tick
+            conn.execute("UPDATE league SET status='complete' WHERE id=1")
+            conn.commit()
+            name = conn.execute("SELECT team_name FROM teams WHERE team_id=?",
+                                (champ,)).fetchone()["team_name"]
+            events.append(f"CHAMPION: {name}")
+            newly_crowned = True
 
     return {"status": "complete" if champ is not None else "in_progress",
-            "events": events, "champion": champ}
+            "events": events, "champion": champ, "newly_crowned": newly_crowned}

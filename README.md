@@ -137,6 +137,8 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       test_tick.py      offline tests for the tick loop + dashboard
       test_playoffs.py  offline tests for the playoff bracket
       test_digest.py    offline tests for the notification digest
+      send_digest_email.py  email the digest via Gmail SMTP (FFL_DIGEST_CMD target)
+      test_email.py     offline tests for the emailer (mocked SMTP)
       backup_db.py      cron / on-demand DB backup CLI
       test_backup.py    offline tests for the backup helper
 
@@ -241,3 +243,21 @@ refreshes the dashboard.
   advancing tick to `FFL_DIGEST_PATH`, plus provider-agnostic delivery — set
   `FFL_DIGEST_WEBHOOK` (POST) or `FFL_DIGEST_CMD` (stdin, e.g. `ntfy publish`,
   `mail`) to route it to push/email without any third-party dependency.
+  - **Email via Gmail** (`scripts/send_digest_email.py`, stdlib only): reads the
+    digest (piped on stdin, else `FFL_DIGEST_PATH`) and sends it over SMTP_SSL
+    (port 465) with a Gmail **app password**. Env: `FFL_GMAIL_ADDRESS`,
+    `FFL_GMAIL_APP_PASSWORD`, and optional `FFL_DIGEST_TO` (defaults to the Gmail
+    address, so you email yourself). Nothing is hardcoded; a bad-credentials or
+    network failure logs to stderr and exits non-zero, so a failed email never
+    crashes the tick. To enable, set (once you've made an app password):
+
+        export FFL_GMAIL_ADDRESS=you@gmail.com
+        export FFL_GMAIL_APP_PASSWORD=...            # Gmail app password
+        export FFL_DIGEST_CMD='python3 -m scripts.send_digest_email'
+
+    Leave `FFL_DIGEST_CMD` unset until you're ready — the digest still writes to
+    disk regardless.
+
+- **Championship backup:** the tick takes a dedicated explicit backup the moment
+  a champion is crowned (a non-reproducible, high-value event), on top of the
+  routine per-advance and cron backups.
