@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS chat_log (
     event_type  TEXT,             -- trade_talk|trash_talk|collision|system|...
     message     TEXT NOT NULL,
     txn_id      INTEGER REFERENCES transactions(txn_id),
+    reply_to    INTEGER REFERENCES chat_log(chat_id),  -- the message this replies to
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
@@ -177,7 +178,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     """
     existing = {r["name"] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
-    for table, column, decl in [("teams", "bio", "TEXT")]:
+    for table, column, decl in [("teams", "bio", "TEXT"),
+                                ("chat_log", "reply_to", "INTEGER")]:
         if table not in existing:
             continue
         cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}

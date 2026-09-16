@@ -167,14 +167,27 @@ def _free_agents(conn, season_year, week, limit=24):
 
 
 def _recent_chat(conn, limit=24):
-    rows = conn.execute(
-        """SELECT c.event_type, c.message, c.created_at, t.gm_name
+    rows = list(reversed(conn.execute(
+        """SELECT c.chat_id, c.event_type, c.message, c.created_at, c.reply_to,
+                  t.gm_name
              FROM chat_log c LEFT JOIN teams t ON t.team_id = c.team_id
-            ORDER BY c.chat_id DESC LIMIT ?""", (limit,)).fetchall()
-    return list(reversed([{"who": r["gm_name"] or "League",
-                           "kind": r["event_type"], "msg": r["message"],
-                           "ts": r["created_at"]}
-                          for r in rows]))
+            ORDER BY c.chat_id DESC LIMIT ?""", (limit,)).fetchall()))
+    # Look up the parent of any reply (it may be older than the shown window),
+    # so a reply can render a quoted preview of the message it answers.
+    parent_ids = {r["reply_to"] for r in rows if r["reply_to"]}
+    parents = {}
+    if parent_ids:
+        marks = ",".join("?" * len(parent_ids))
+        for p in conn.execute(
+                f"""SELECT c.chat_id, c.message, t.gm_name FROM chat_log c
+                     LEFT JOIN teams t ON t.team_id = c.team_id
+                    WHERE c.chat_id IN ({marks})""", list(parent_ids)):
+            parents[p["chat_id"]] = {"who": p["gm_name"] or "League",
+                                     "msg": p["message"]}
+    return [{"who": r["gm_name"] or "League", "kind": r["event_type"],
+             "msg": r["message"], "ts": r["created_at"],
+             "parent": parents.get(r["reply_to"]) if r["reply_to"] else None}
+            for r in rows]
 
 
 _POS_ORDER = {"QB": 0, "RB": 1, "WR": 2, "TE": 3, "K": 4, "DST": 5}
@@ -455,10 +468,19 @@ def _chat_feed(chat):
         tcls = " trade" if kind == "trade_talk" else ""
         chip = (f"<span class='chip' style='background:hsl({_hue(who)} 72% 40%)'>"
                 f"{_esc(_initials(who))}</span>")
+        quote = ""
+        p = c.get("parent")
+        if p:
+            snip = p["msg"]
+            if len(snip) > 90:
+                snip = snip[:90].rstrip() + "…"
+            quote = (f"<div class='tquote'><span class='qwho'>↩ {_esc(p['who'])}</span>"
+                     f"<span class='qmsg'>{_esc(snip)}</span></div>")
         items.append(
-            f"<li class='msg{tcls}'>{chip}<div class='body'>"
+            f"<li class='msg{tcls}'>{chip}<div class='bubble'>"
             f"<div class='byline'><span class='who'>{_esc(who)}</span>"
             f"<span class='ts'>{ts}</span></div>"
+            f"{quote}"
             f"<span class='line'>{_esc(msg)}</span></div></li>")
     return "<ul class='chat'>" + "".join(items) + "</ul>"
 
@@ -581,16 +603,23 @@ thead th.l{text-align:left}
 .chat{list-style:none;margin:0;padding:4px 0;max-height:560px;overflow-y:auto}
 .chat li{border-bottom:1px solid var(--line)}
 .chat li:last-child{border-bottom:0}
-.msg{display:flex;gap:13px;align-items:flex-start;padding:14px 18px}
+.msg{display:flex;gap:11px;align-items:flex-start;padding:12px 18px}
 .chip{flex:0 0 38px;width:38px;height:38px;color:#fff;border:2px solid var(--line);
   font-family:"Oswald",sans-serif;font-size:15px;font-weight:700;letter-spacing:.3px;
   display:flex;align-items:center;justify-content:center}
-.msg .body{display:flex;flex-direction:column;gap:3px;min-width:0}
+/* Each message is a chat bubble; replies carry a quoted preview of their parent. */
+.msg .bubble{display:flex;flex-direction:column;gap:4px;min-width:0;max-width:84%;
+  background:var(--surface-2);border:2px solid var(--line);padding:8px 12px}
 .msg .byline{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
 .msg .who{font-size:13.5px;font-weight:700;color:var(--ink)}
 .msg .ts{font-size:11px;color:var(--muted);font-weight:600;font-variant-numeric:tabular-nums}
 .msg.trade .who{color:var(--accent)}
 .msg .line{font-size:15.5px;line-height:1.5;overflow-wrap:anywhere}
+.msg .tquote{display:flex;flex-direction:column;gap:1px;background:var(--surface);
+  border-left:3px solid var(--accent);padding:4px 9px;margin:1px 0 2px}
+.msg .qwho{font-size:10.5px;font-weight:700;color:var(--accent);letter-spacing:.02em}
+.msg .qmsg{font-size:12px;color:var(--muted);line-height:1.35;overflow-wrap:anywhere;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .sysmsg{padding:10px 16px;text-align:center;display:flex;flex-direction:column;gap:2px}
 .sysmsg .line{font-size:13px;color:var(--muted);font-weight:600}
 .sysmsg .systs{font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums}

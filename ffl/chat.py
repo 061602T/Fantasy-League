@@ -51,13 +51,16 @@ def _post(conn, team_id, message):
     conn.commit()
 
 
-def _post_at(conn, team_id, message, when):
-    """Post a banter line with an explicit created_at (UTC), for the ambient
-    loop's staggered timestamps."""
-    conn.execute("INSERT INTO chat_log(team_id, event_type, message, created_at) "
-                 "VALUES(?, 'banter', ?, ?)",
-                 (team_id, message, when.strftime("%Y-%m-%d %H:%M:%S")))
+def _post_at(conn, team_id, message, when, reply_to=None):
+    """Post a banter line with an explicit created_at (UTC) and optional
+    reply_to link, for the ambient loop's staggered, threaded messages.
+    Returns the new chat_id."""
+    cur = conn.execute(
+        "INSERT INTO chat_log(team_id, event_type, message, reply_to, created_at) "
+        "VALUES(?, 'banter', ?, ?, ?)",
+        (team_id, message, reply_to, when.strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
+    return cur.lastrowid
 
 
 def _wants_to_speak(team, headline, involvement, recent) -> bool:
@@ -278,9 +281,11 @@ def ambient_exchange(conn: sqlite3.Connection, *, rng=None, use_gate: bool = Tru
 
     posted = []
     when = now
-    _post_at(conn, starter["team_id"], msg, when)
+    # `last_id` is the message a reply threads onto -- the starter, then each
+    # subsequent reply chains onto the one before it.
+    last_id = _post_at(conn, starter["team_id"], msg, when)
     posted.append({"team_id": starter["team_id"], "gm_name": starter["gm_name"],
-                   "message": msg, "ts": when, "mode": mode})
+                   "message": msg, "ts": when, "mode": mode, "reply_to": None})
 
     n_replies = rng.choices([0, 1, 2], weights=[0.35, 0.45, 0.20], k=1)[0]
     n_replies = min(n_replies, max_replies)
@@ -294,7 +299,9 @@ def ambient_exchange(conn: sqlite3.Connection, *, rng=None, use_gate: bool = Tru
         if not reply:
             continue
         when = when + timedelta(seconds=rng.randint(5, 150))
-        _post_at(conn, team["team_id"], reply, when)
+        rid = _post_at(conn, team["team_id"], reply, when, reply_to=last_id)
         posted.append({"team_id": team["team_id"], "gm_name": team["gm_name"],
-                       "message": reply, "ts": when, "mode": "reply"})
+                       "message": reply, "ts": when, "mode": "reply",
+                       "reply_to": last_id})
+        last_id = rid
     return posted

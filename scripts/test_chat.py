@@ -143,11 +143,18 @@ def test_ambient_threading_and_timestamps():
     # Threading: a later composer saw an earlier message in its prompt.
     assert any("line1" in p for p in prompts[1:]), "reply didn't see earlier message"
     # Each message stored with its OWN staggered timestamp, strictly increasing.
-    ts = [r["created_at"] for r in conn.execute(
-        "SELECT created_at FROM chat_log WHERE event_type='banter' "
-        "AND message LIKE 'line%' ORDER BY chat_id")]
+    rows = conn.execute(
+        "SELECT chat_id, reply_to, created_at FROM chat_log WHERE event_type='banter'"
+        " AND message LIKE 'line%' ORDER BY chat_id").fetchall()
+    ts = [r["created_at"] for r in rows]
     assert len(set(ts)) == 3 and ts == sorted(ts), ts
-    print("ok: ambient_exchange (threaded replies, staggered unique timestamps)")
+    # reply_to links: starter has none; each reply threads onto the one before it.
+    ids = [r["chat_id"] for r in rows]
+    assert rows[0]["reply_to"] is None
+    assert rows[1]["reply_to"] == ids[0] and rows[2]["reply_to"] == ids[1], rows
+    # The posted list carries the same link.
+    assert posted[1]["reply_to"] == ids[0] and posted[2]["reply_to"] == ids[1]
+    print("ok: ambient_exchange (threaded reply_to chain, staggered timestamps)")
 
 
 def test_ambient_fresh_topic_when_quiet():
