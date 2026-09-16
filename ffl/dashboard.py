@@ -24,6 +24,17 @@ def _esc(x) -> str:
     return html.escape(str(x if x is not None else ""))
 
 
+def _fmt_ts(s) -> str:
+    """SQLite 'YYYY-MM-DD HH:MM:SS' (UTC) -> 'Mon D · HH:MM UTC'. Blank on junk."""
+    if not s:
+        return ""
+    try:
+        dt = datetime.strptime(str(s)[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return _esc(s)
+    return dt.strftime("%b ") + str(dt.day) + dt.strftime(" · %H:%M UTC")
+
+
 # --- Data pulls ------------------------------------------------------------
 
 def _league(conn):
@@ -74,66 +85,95 @@ def _week_matchups(conn, week, season_year=None):
     return out
 
 
-def _recent_moves(conn, limit=8):
+def _player_names(conn, pids):
+    pids = {p for p in pids if p}
+    if not pids:
+        return {}
+    marks = ",".join("?" * len(pids))
+    return {x["player_id"]: x["name"] for x in conn.execute(
+        f"SELECT player_id, name FROM players WHERE player_id IN ({marks})",
+        list(pids))}
+
+
+def _recent_trades(conn, limit=8):
+    """Recent trades (accepted or fell-through), newest first."""
     import json
     names = {r["team_id"]: r["team_name"]
              for r in conn.execute("SELECT team_id, team_name FROM teams")}
     rows = conn.execute(
-        """SELECT type, status, from_team_id, to_team_id, faab_bid, details_json
-             FROM transactions WHERE type IN ('trade','waiver_claim')
+        """SELECT status, from_team_id, to_team_id, details_json
+             FROM transactions WHERE type = 'trade'
             ORDER BY txn_id DESC LIMIT ?""", (limit,)).fetchall()
-
-    parsed, pids = [], set()
-    for r in rows:
-        try:
-            d = json.loads(r["details_json"]) if r["details_json"] else {}
-        except ValueError:
-            d = {}
-        parsed.append((r, d))
-        if r["type"] == "waiver_claim":
-            pids.update([d.get("add"), d.get("drop")])
-        else:
-            pids.update(d.get("a_gives", []) + d.get("b_gives", []))
-    pids = {p for p in pids if p}
-    pname = {}
-    if pids:
-        marks = ",".join("?" * len(pids))
-        pname = {x["player_id"]: x["name"] for x in conn.execute(
-            f"SELECT player_id, name FROM players WHERE player_id IN ({marks})",
-            list(pids))}
+    parsed = [(r, json.loads(r["details_json"]) if r["details_json"] else {})
+              for r in rows]
+    pname = _player_names(conn, {p for _, d in parsed
+                                 for p in d.get("a_gives", []) + d.get("b_gives", [])})
 
     def nm(pid):
         return pname.get(pid, pid or "?")
 
     out = []
     for r, d in parsed:
-        ok = r["status"] == "processed"
-        if r["type"] == "waiver_claim":
-            out.append({"kind": "waiver", "ok": ok,
-                        "team": names.get(r["to_team_id"], "?"),
-                        "add": nm(d.get("add")), "drop": nm(d.get("drop")),
-                        "faab": r["faab_bid"]})
-        else:
-            a = names.get(d.get("a"), names.get(r["from_team_id"], "?"))
-            b = names.get(d.get("b"), names.get(r["to_team_id"], "?"))
-            a_gets = [nm(x) for x in d.get("b_gives", [])]  # a receives b's players
-            b_gets = [nm(x) for x in d.get("a_gives", [])]
-            if d.get("b_faab"):
-                a_gets.append(f"${d['b_faab']} FAAB")
-            if d.get("a_faab"):
-                b_gets.append(f"${d['a_faab']} FAAB")
-            out.append({"kind": "trade", "ok": ok, "a": a, "b": b,
-                        "a_gets": a_gets, "b_gets": b_gets})
+        a = names.get(d.get("a"), names.get(r["from_team_id"], "?"))
+        b = names.get(d.get("b"), names.get(r["to_team_id"], "?"))
+        a_gets = [nm(x) for x in d.get("b_gives", [])]  # a receives b's players
+        b_gets = [nm(x) for x in d.get("a_gives", [])]
+        if d.get("b_faab"):
+            a_gets.append(f"${d['b_faab']} FAAB")
+        if d.get("a_faab"):
+            b_gets.append(f"${d['a_faab']} FAAB")
+        out.append({"ok": r["status"] == "processed", "a": a, "b": b,
+                    "a_gets": a_gets, "b_gets": b_gets})
     return out
 
 
-def _recent_chat(conn, limit=16):
+def _waiver_history(conn, limit=24):
+    """Waiver claim history, newest first: team, add/drop, won/lost, and week."""
+    import json
+    names = {r["team_id"]: r["team_name"]
+             for r in conn.execute("SELECT team_id, team_name FROM teams")}
     rows = conn.execute(
-        """SELECT c.event_type, c.message, t.gm_name
+        """SELECT status, to_team_id, faab_bid, details_json
+             FROM transactions WHERE type = 'waiver_claim'
+            ORDER BY txn_id DESC LIMIT ?""", (limit,)).fetchall()
+    parsed = [(r, json.loads(r["details_json"]) if r["details_json"] else {})
+              for r in rows]
+    pname = _player_names(conn, {p for _, d in parsed
+                                 for p in (d.get("add"), d.get("drop"))})
+
+    def nm(pid):
+        return pname.get(pid, pid or "?")
+
+    return [{"team": names.get(r["to_team_id"], "?"),
+             "add": nm(d.get("add")), "drop": nm(d.get("drop")),
+             "faab": r["faab_bid"], "won": r["status"] == "processed",
+             "week": d.get("week")}
+            for r, d in parsed]
+
+
+def _free_agents(conn, season_year, week, limit=24):
+    """Unrostered players still on the wire, ranked by recent-form projection."""
+    rows = conn.execute(
+        """SELECT p.player_id, p.name, p.position, p.nfl_team FROM players p
+            WHERE NOT EXISTS (SELECT 1 FROM rosters r
+                               WHERE r.player_id = p.player_id
+                                 AND r.dropped_week IS NULL)""").fetchall()
+    fas = [{"name": r["name"], "pos": r["position"], "team": r["nfl_team"],
+            "proj": scoreproj.project_player(conn, r["player_id"], season_year, week)}
+           for r in rows]
+    # Best projection first; players with no scoring history sink to the bottom.
+    fas.sort(key=lambda x: (x["proj"] is None, -(x["proj"] or 0.0), x["name"]))
+    return fas[:limit]
+
+
+def _recent_chat(conn, limit=24):
+    rows = conn.execute(
+        """SELECT c.event_type, c.message, c.created_at, t.gm_name
              FROM chat_log c LEFT JOIN teams t ON t.team_id = c.team_id
             ORDER BY c.chat_id DESC LIMIT ?""", (limit,)).fetchall()
     return list(reversed([{"who": r["gm_name"] or "League",
-                           "kind": r["event_type"], "msg": r["message"]}
+                           "kind": r["event_type"], "msg": r["message"],
+                           "ts": r["created_at"]}
                           for r in rows]))
 
 
@@ -301,44 +341,62 @@ def _matchup_cards(games):
     return "<div class='games'>" + "".join(cards) + "</div>"
 
 
-def _moves_list(moves):
-    if not moves:
-        return "<p class='empty'>No trades or waiver claims yet.</p>"
+def _trades_list(trades):
+    if not trades:
+        return "<p class='empty'>No trades yet.</p>"
     none = "nothing"
     items = []
-    for m in moves:
+    for m in trades:
         st = "✓" if m["ok"] else "✗"
         stcl = "ok" if m["ok"] else "no"
-        if m["kind"] == "waiver":
-            badge = "<span class='badge waiver'>WAIVER</span>"
-            head = (f"<div class='mvhead'>{_esc(m['team'])}"
-                    f"<span class='st {stcl}'>{st}</span></div>")
-            faab = f"${m['faab']}" if m["faab"] is not None else ""
-            if m["ok"]:
-                body = head + (
-                    f"<div class='mvline'><span class='add'>&plus; "
-                    f"{_esc(m['add'])}</span>"
-                    f"<span class='drop'>&minus; {_esc(m['drop'])}</span>"
-                    f"<span class='fa'>{faab}</span></div>")
-            else:
-                body = head + (f"<div class='mvline muted'>missed on "
-                               f"{_esc(m['add'])} · {faab} bid</div>")
+        badge = "<span class='badge trade'>TRADE</span>"
+        head = (f"<div class='mvhead'>{_esc(m['a'])} ⇄ {_esc(m['b'])}"
+                f"<span class='st {stcl}'>{st}</span></div>")
+        if m["ok"]:
+            a_txt = ", ".join(m["a_gets"]) or none
+            b_txt = ", ".join(m["b_gets"]) or none
+            body = head + (
+                f"<div class='mvline'><b>{_esc(m['a'])}</b> get {_esc(a_txt)}</div>"
+                f"<div class='mvline'><b>{_esc(m['b'])}</b> get {_esc(b_txt)}</div>")
         else:
-            badge = "<span class='badge trade'>TRADE</span>"
-            head = (f"<div class='mvhead'>{_esc(m['a'])} ⇄ {_esc(m['b'])}"
-                    f"<span class='st {stcl}'>{st}</span></div>")
-            if m["ok"]:
-                a_txt = ", ".join(m["a_gets"]) or none
-                b_txt = ", ".join(m["b_gets"]) or none
-                body = head + (
-                    f"<div class='mvline'><b>{_esc(m['a'])}</b> get "
-                    f"{_esc(a_txt)}</div>"
-                    f"<div class='mvline'><b>{_esc(m['b'])}</b> get "
-                    f"{_esc(b_txt)}</div>")
-            else:
-                body = head + "<div class='mvline muted'>talks fell through, no deal</div>"
+            body = head + "<div class='mvline muted'>talks fell through, no deal</div>"
         items.append(f"<li>{badge}<div class='mv'>{body}</div></li>")
     return "<ul class='moves'>" + "".join(items) + "</ul>"
+
+
+def _waiver_list(claims):
+    if not claims:
+        return "<p class='empty'>No waiver claims yet.</p>"
+    items = []
+    for c in claims:
+        won = c["won"]
+        tag = "<span class='wtag won'>WON</span>" if won \
+            else "<span class='wtag lost'>LOST</span>"
+        wk = f"<span class='wk'>Wk {c['week']}</span>" if c["week"] else ""
+        faab = f"${c['faab']}" if c["faab"] is not None else ""
+        if won:
+            detail = (f"<span class='add'>&plus; {_esc(c['add'])}</span>"
+                      f"<span class='drop'>&minus; {_esc(c['drop'])}</span>")
+        else:
+            detail = f"<span class='muted'>missed on {_esc(c['add'])}</span>"
+        items.append(
+            f"<li><div class='wvhead'>{_esc(c['team'])}{wk}{tag}</div>"
+            f"<div class='wvline'>{detail}<span class='fa'>{faab}</span></div></li>")
+    return "<ul class='wv'>" + "".join(items) + "</ul>"
+
+
+def _falist(fas):
+    if not fas:
+        return "<p class='empty'>No free agents available.</p>"
+    items = []
+    for f in fas:
+        proj = f"proj {f['proj']:.1f}" if f["proj"] is not None else ""
+        team = f" · {_esc(f['team'])}" if f["team"] else ""
+        items.append(
+            f"<li><span class='fpos'>{_esc(f['pos'])}</span>"
+            f"<span class='fname'>{_esc(f['name'])}{team}</span>"
+            f"<span class='fproj'>{proj}</span></li>")
+    return "<ul class='falist'>" + "".join(items) + "</ul>"
 
 
 def _roster_cards(rosters):
@@ -387,16 +445,20 @@ def _chat_feed(chat):
     for c in chat:
         who, msg = c["who"], c["msg"]
         kind = c["kind"] or ""
+        ts = _fmt_ts(c.get("ts"))
         # System/event lines (no author) read as centred notes, not speech.
         if who == "League" or kind in ("system", "waiver", "collision", "draft"):
-            items.append(f"<li class='sysmsg'><span class='line'>{_esc(msg)}</span></li>")
+            when = f"<span class='systs'>{ts}</span>" if ts else ""
+            items.append(f"<li class='sysmsg'><span class='line'>{_esc(msg)}</span>"
+                         f"{when}</li>")
             continue
         tcls = " trade" if kind == "trade_talk" else ""
         chip = (f"<span class='chip' style='background:hsl({_hue(who)} 72% 40%)'>"
                 f"{_esc(_initials(who))}</span>")
         items.append(
             f"<li class='msg{tcls}'>{chip}<div class='body'>"
-            f"<span class='who'>{_esc(who)}</span>"
+            f"<div class='byline'><span class='who'>{_esc(who)}</span>"
+            f"<span class='ts'>{ts}</span></div>"
             f"<span class='line'>{_esc(msg)}</span></div></li>")
     return "<ul class='chat'>" + "".join(items) + "</ul>"
 
@@ -513,20 +575,49 @@ thead th.l{text-align:left}
 .biobox[open]>summary{color:var(--accent-ink);background:var(--accent)}
 .biobox .bio{margin:0;padding:10px 14px 12px;font-size:12.5px;line-height:1.5;
   color:var(--ink);border-top:1px solid var(--line)}
-/* Chat */
-.chat{list-style:none;margin:0;padding:2px 0;max-height:600px;overflow-y:auto}
+/* Chat -- a prominent, full-width section right under the standings. */
+.eyebrow.big{font-size:14px;padding:5px 12px}
+.chatwrap .card{border-width:2px}
+.chat{list-style:none;margin:0;padding:4px 0;max-height:560px;overflow-y:auto}
 .chat li{border-bottom:1px solid var(--line)}
 .chat li:last-child{border-bottom:0}
-.msg{display:flex;gap:11px;align-items:flex-start;padding:11px 16px}
-.chip{flex:0 0 30px;width:30px;height:30px;color:#fff;border:2px solid var(--line);
-  font-family:"Oswald",sans-serif;font-size:12px;font-weight:700;letter-spacing:.3px;
+.msg{display:flex;gap:13px;align-items:flex-start;padding:14px 18px}
+.chip{flex:0 0 38px;width:38px;height:38px;color:#fff;border:2px solid var(--line);
+  font-family:"Oswald",sans-serif;font-size:15px;font-weight:700;letter-spacing:.3px;
   display:flex;align-items:center;justify-content:center}
-.msg .body{display:flex;flex-direction:column;gap:2px;min-width:0}
-.msg .who{font-size:12px;font-weight:700;color:var(--ink)}
+.msg .body{display:flex;flex-direction:column;gap:3px;min-width:0}
+.msg .byline{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.msg .who{font-size:13.5px;font-weight:700;color:var(--ink)}
+.msg .ts{font-size:11px;color:var(--muted);font-weight:600;font-variant-numeric:tabular-nums}
 .msg.trade .who{color:var(--accent)}
-.msg .line{font-size:14px;line-height:1.45;overflow-wrap:anywhere}
-.sysmsg{padding:9px 16px;text-align:center}
-.sysmsg .line{font-size:12.5px;color:var(--muted);font-weight:600}
+.msg .line{font-size:15.5px;line-height:1.5;overflow-wrap:anywhere}
+.sysmsg{padding:10px 16px;text-align:center;display:flex;flex-direction:column;gap:2px}
+.sysmsg .line{font-size:13px;color:var(--muted);font-weight:600}
+.sysmsg .systs{font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+/* Waivers */
+.subhead{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--ink);margin:0 0 8px}
+.wv,.falist{list-style:none;margin:0;padding:4px 0}
+.wv li{padding:10px 16px;border-bottom:1px solid var(--line)}
+.wv li:last-child,.falist li:last-child{border-bottom:0}
+.wvhead{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:700}
+.wvline{display:flex;align-items:baseline;gap:10px;font-size:13px;margin-top:3px;
+  overflow-wrap:anywhere}
+.wvline .add{color:var(--win);font-weight:700}
+.wvline .drop{color:var(--loss);font-weight:700}
+.wvline .fa{color:var(--accent);font-weight:700;margin-left:auto}
+.wk{font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.04em}
+.wtag{font-size:10px;font-weight:700;letter-spacing:.05em;padding:2px 7px;
+  border:2px solid var(--line);margin-left:auto}
+.wtag.won{background:var(--accent);color:var(--accent-ink)}
+.wtag.lost{background:var(--surface-2);color:var(--muted)}
+.falist li{display:flex;align-items:baseline;gap:10px;padding:6px 16px;font-size:13.5px;
+  border-bottom:1px solid var(--line)}
+.falist .fpos{flex:0 0 34px;font-size:10px;font-weight:700;letter-spacing:.05em;
+  color:var(--muted);text-transform:uppercase}
+.falist .fname{flex:1;min-width:0}
+.falist .fproj{color:var(--muted);font-weight:700;font-size:12px;
+  font-variant-numeric:tabular-nums}
 .empty{color:var(--muted);padding:16px;margin:0}
 footer{margin-top:24px;color:var(--muted);font-size:12px;text-align:center;font-weight:600}
 """
@@ -552,7 +643,10 @@ def render(conn: sqlite3.Connection) -> str:
     next_week = _next_week(conn)
     upcoming = _upcoming(conn, next_week, season)
     rosters = _rosters(conn)
-    moves = _recent_moves(conn)
+    trades = _recent_trades(conn)
+    claims = _waiver_history(conn)
+    fa_week = next_week or (shown_week + 1)
+    free_agents = _free_agents(conn, season, fa_week)
     chat = _recent_chat(conn)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     wk_label = f"Week {week} final" if week else "Preseason"
@@ -609,6 +703,11 @@ def render(conn: sqlite3.Connection) -> str:
      'so far.</p>' if odds else ''}
   </section>
 
+  <section class="chatwrap">
+    <p class="eyebrow big">League chat</p>
+    <div class="card">{_chat_feed(chat)}</div>
+  </section>
+
   <section>
     <p class="eyebrow">{_esc(mlabel)}</p>
     <p class="mnote">“proj” is a statistical estimate of each team’s total from its
@@ -623,16 +722,24 @@ def render(conn: sqlite3.Connection) -> str:
     {_roster_cards(rosters)}
   </section>
 
-  <div class="cols">
-    <section>
-      <p class="eyebrow">Recent moves</p>
-      <div class="card">{_moves_list(moves)}</div>
-    </section>
-    <section>
-      <p class="eyebrow">League chat</p>
-      <div class="card">{_chat_feed(chat)}</div>
-    </section>
-  </div>
+  <section>
+    <p class="eyebrow">Waivers</p>
+    <div class="cols">
+      <div>
+        <p class="subhead">Claim history</p>
+        <div class="card">{_waiver_list(claims)}</div>
+      </div>
+      <div>
+        <p class="subhead">Available free agents{f' — top {len(free_agents)}' if free_agents else ''}</p>
+        <div class="card">{_falist(free_agents)}</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Recent trades</p>
+    <div class="card">{_trades_list(trades)}</div>
+  </section>
 
   <footer>Created by Trevor Blum · AI Fantasy Football League ·
     generated {now}</footer>

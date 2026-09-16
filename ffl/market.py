@@ -455,7 +455,8 @@ def run_waivers(conn, week: int = None, team_ids=None, use_gate: bool = True,
             """INSERT INTO transactions(type, status, to_team_id, faab_bid,
                  details_json, resolved_at)
                VALUES('waiver_claim', ?, ?, ?, ?, datetime('now'))""",
-            (status, tid, faab, json.dumps({"add": add, "drop": drop})))
+            (status, tid, faab,
+             json.dumps({"add": add, "drop": drop, "week": week})))
         nm = _names(conn, [add, drop])
         _log(conn, tid, "waiver",
              f"{team['gm_name']} "
