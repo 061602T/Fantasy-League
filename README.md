@@ -316,3 +316,20 @@ games and not the league's actual points.** Built and validated one at a time.
   - *Note:* win % (season-long mean/variance) and “proj” (recent form) are
     independent estimates, so a team can be favoured to win yet carry a lower
     recent-form projection, or vice versa — they answer different questions.
+
+- **Playoff odds** (`ffl/playoffodds.py`): the “Playoff%” column on the
+  standings — each team's chance of finishing in the top `PLAYOFF_TEAMS`.
+  - *Method:* a Monte-Carlo simulation. Current records are fixed; each of
+    `PLAYOFF_SIMS` (default **10,000**) runs simulates every remaining game by
+    drawing both teams' scores from their scoring distribution (the same floored
+    `Normal(mean, sd)` as win probability), re-seeds the final standings exactly
+    as the league does (`wins` desc, then `points_for` desc), and flags the top
+    seeds. The odds are the share of runs a team made the cut. Vectorized with
+    numpy — ~18 ms for a full season, so it recomputes every tick. With no games
+    left it's deterministic (current top seeds 100%, rest 0%).
+  - *Validation (real 2025 backtest, `scripts/validate_playoffodds.py`):* scoring
+    week by week and forecasting from each week's state, **Brier 0.032** vs a
+    naive flat-`4/8` baseline of 0.25 — the odds converge correctly (the four
+    eventual playoff teams stay 68–100%, the rest 0–2%, and the one true bubble
+    team reads ~46% mid-season before fading). Offline tests:
+    `scripts/test_playoffodds.py`.

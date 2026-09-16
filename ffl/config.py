@@ -132,6 +132,12 @@ SCORE_PROJ_WINDOW = 4
 # team week is empirically ~28 pts sd). A statistical estimate, not a lock.
 WINPROB_DEFAULT_SD = 28.0
 
+# Playoff odds (ffl/playoffodds.py): Monte-Carlo simulation count. Each rest-of-
+# season simulation draws every remaining game from the teams' scoring
+# distributions and re-seeds the standings; the odds are the share of sims a
+# team lands in the top-`PLAYOFF_TEAMS`. Vectorized, so 10k runs in ~ms.
+PLAYOFF_SIMS = 10000
+
 # --- Draft pool positional targets (from the brief, ~280 players) ----------
 POOL_TARGETS = {"QB": 16, "RB": 70, "WR": 90, "TE": 24, "K": 32, "DST": 32}
 

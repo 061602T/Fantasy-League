@@ -15,7 +15,7 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 
-from . import config, playoffs, scoreproj, winprob
+from . import config, playoffs, playoffodds, scoreproj, winprob
 
 DEFAULT_PATH = os.path.join("~", "ffl-data", "dashboard.html")
 
@@ -32,7 +32,7 @@ def _league(conn):
 
 def _standings(conn):
     return conn.execute(
-        """SELECT team_name, gm_name, wins, losses, ties, points_for,
+        """SELECT team_id, team_name, gm_name, wins, losses, ties, points_for,
                   points_against, faab_remaining
              FROM teams ORDER BY wins DESC, points_for DESC""").fetchall()
 
@@ -175,11 +175,27 @@ def _rosters(conn):
 
 # --- HTML pieces -----------------------------------------------------------
 
-def _standings_rows(rows):
+def _odds_cell(pct) -> str:
+    """A 'Playoff%' cell, emphasised near-locked (>=99%) and shaded out near 0."""
+    if pct is None:
+        return ""
+    if pct >= 99.5:
+        cls, txt = "odds lock", "✓"
+    elif pct <= 0.5:
+        cls, txt = "odds out", "—"
+    else:
+        cls, txt = "odds", f"{pct:.0f}%"
+    return f"<td class='num {cls}'>{txt}</td>"
+
+
+def _standings_rows(rows, odds=None):
     out = []
     for i, r in enumerate(rows, 1):
         lead = " leader" if i == 1 else ""
         rec = f"{r['wins']}–{r['losses']}–{r['ties']}"
+        odds_cell = ""
+        if odds is not None:
+            odds_cell = _odds_cell(odds.get(r["team_id"], 0.0) * 100)
         out.append(
             f"<tr class='row{lead}'>"
             f"<td class='rank'>{i}</td>"
@@ -189,6 +205,7 @@ def _standings_rows(rows):
             f"<td class='num'>{r['points_for']:.1f}</td>"
             f"<td class='num muted'>{r['points_against']:.1f}</td>"
             f"<td class='num faab'>${r['faab_remaining']}</td>"
+            f"{odds_cell}"
             f"</tr>")
     return "\n".join(out)
 
@@ -431,6 +448,9 @@ thead th.l{text-align:left}
 .gm{font-size:12px;color:var(--muted)}
 .rec{font-weight:700}
 .faab{color:var(--accent);font-weight:700}
+.odds{font-weight:700}
+.odds.lock{color:var(--win)}
+.odds.out{color:var(--muted)}
 .muted{color:var(--muted)}
 .games{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
 .game{background:var(--surface);border:2px solid var(--line);padding:12px 14px}
@@ -520,6 +540,14 @@ def render(conn: sqlite3.Connection) -> str:
     shown_week = week or (lg["current_week"] if lg else 0) or 1
 
     standings = _standings(conn)
+    # Playoff odds only while regular-season games remain; seed with the count of
+    # completed games so identical state gives identical odds tick to tick.
+    remaining = playoffodds.remaining_games(conn)
+    odds = None
+    if remaining:
+        n_final = conn.execute(
+            "SELECT COUNT(*) FROM matchups WHERE status='final'").fetchone()[0]
+        odds = playoffodds.playoff_odds(conn, seed=n_final)
     games = _week_matchups(conn, shown_week, season)
     next_week = _next_week(conn)
     upcoming = _upcoming(conn, next_week, season)
@@ -570,11 +598,15 @@ def render(conn: sqlite3.Connection) -> str:
       <table>
         <thead><tr>
           <th class="l">#</th><th class="l">Team</th><th>Rec</th>
-          <th>PF</th><th>PA</th><th>FAAB</th>
+          <th>PF</th><th>PA</th><th>FAAB</th>{"<th>Playoff%</th>" if odds else ""}
         </tr></thead>
-        <tbody>{_standings_rows(standings)}</tbody>
+        <tbody>{_standings_rows(standings, odds)}</tbody>
       </table>
     </div>
+    {'<p class="mnote">Playoff% = share of 10,000 rest-of-season simulations '
+     'in which the team finishes in the top ' + str(playoffs._bracket_size()) +
+     ' — a statistical estimate from current standings and each team’s scoring '
+     'so far.</p>' if odds else ''}
   </section>
 
   <section>
