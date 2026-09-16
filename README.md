@@ -268,6 +268,26 @@ refreshes the dashboard.
   a champion is crowned (a non-reproducible, high-value event), on top of the
   routine per-advance and cron backups.
 
+- **GitHub Pages publishing** (`ffl/ghpages.py`): after each advancing/notable
+  tick (the same trigger as the digest), the freshly generated dashboard is
+  pushed to a GitHub Pages repo as `index.html`, giving the league a public live
+  page. It clones the Pages repo once into a directory *outside* the code
+  checkout, and only commits/pushes when the file actually changed (no empty
+  commits on idle ticks). Any git/network/auth failure is logged and swallowed,
+  never crashing the tick. Disabled (a no-op) unless configured via env:
+  - `FFL_GH_DASHBOARD_TOKEN` — a GitHub token with push access to the Pages repo.
+  - `FFL_GH_DASHBOARD_REPO` — `owner/repo` (or a full GitHub URL). **Use a repo
+    dedicated to the Pages site, not the code repo** — this pushes `index.html`
+    to its `main` root.
+  - `FFL_GH_DASHBOARD_DIR` — where to keep the clone (default
+    `~/ffl-data/dashboard-repo`).
+  - `FFL_GH_DASHBOARD_BRANCH` — Pages branch (default `main`).
+
+  The token is read at runtime and embedded only in the push URL passed to
+  `git push`; the clone's stored `origin` is reset to the clean URL, so the
+  token is never written to `.git/config`, and it's scrubbed from any error
+  text. Offline test: `scripts/test_ghpages.py` (git mocked).
+
 ## Analytics (statistical estimates, not scores)
 
 Deterministic, statistical add-ons — no LLM calls, no extra API spend per tick.

@@ -15,8 +15,8 @@ from __future__ import annotations
 import random
 import sqlite3
 
-from . import (backup, config, dashboard, data, digest, market, playoffs,
-               projections, season, store)
+from . import (backup, config, dashboard, data, digest, ghpages, market,
+               playoffs, projections, season, store)
 from . import chat as chatmod
 
 
@@ -46,7 +46,8 @@ def run_tick(conn: sqlite3.Connection, *, sync: bool = True, refresh: bool = Tru
              backup_after: bool = True, dash_path: str = None,
              db_path: str = None, proj_map: dict = None,
              do_playoffs: bool = True, do_midweek: bool = True,
-             make_digest: bool = True, rng=None) -> dict:
+             make_digest: bool = True, do_publish: bool = True,
+             rng=None) -> dict:
     """Run one tick. Returns a summary dict.
 
     Params exist mostly for testing: `sync`/`refresh` control real data access,
@@ -149,6 +150,16 @@ def run_tick(conn: sqlite3.Connection, *, sync: bool = True, refresh: bool = Tru
                 conn, weeks_scored=weeks_scored, extra_events=events)["path"]
         except Exception as e:  # noqa: BLE001
             events.append(f"WARNING: digest failed: {e}")
+
+    # Publish the dashboard to GitHub Pages -- same trigger as the digest. A
+    # no-op unless FFL_GH_DASHBOARD_TOKEN/REPO are configured, and publish()
+    # never raises, so this can't crash the tick.
+    if do_publish and make_dashboard and dash and (advanced or trade_happened):
+        pub = ghpages.publish(dash)
+        if pub["status"] == "published":
+            events.append("dashboard published to GitHub Pages")
+        elif pub["status"] == "error":
+            events.append(f"WARNING: dashboard publish failed: {pub['error']}")
 
     status = "advanced" if advanced else ("midweek" if midweek else "idle")
     return {"status": status, "weeks_scored": weeks_scored,
