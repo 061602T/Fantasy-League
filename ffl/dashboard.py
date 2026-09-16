@@ -144,7 +144,7 @@ def _rosters(conn):
 
     out = []
     teams = conn.execute(
-        "SELECT team_id, team_name, gm_name, wins, losses, ties FROM teams "
+        "SELECT team_id, team_name, gm_name, bio, wins, losses, ties FROM teams "
         "ORDER BY draft_slot").fetchall()
     for t in teams:
         players = conn.execute(
@@ -158,6 +158,7 @@ def _rosters(conn):
         plist.sort(key=lambda x: (_POS_ORDER.get(x["pos"], 9),
                                   not x["starter"], x["name"]))
         out.append({"name": t["team_name"], "gm": t["gm_name"],
+                    "bio": t["bio"] or "",
                     "rec": f"{t['wins']}–{t['losses']}–{t['ties']}",
                     "players": plist})
     return out
@@ -256,10 +257,15 @@ def _roster_cards(rosters):
             mark = "<span class='mark'>ST</span>" if p["starter"] else ""
             lis.append(f"<li class='{cls}'><span class='pos'>{_esc(p['pos'])}</span>"
                        f"<span class='pl'>{_esc(p['name'])}</span>{mark}</li>")
+        bio = ""
+        if t["bio"]:
+            bio = (f"<details class='biobox'><summary>Bio &amp; baggage</summary>"
+                   f"<p class='bio'>{_esc(t['bio'])}</p></details>")
         cards.append(
             f"<div class='rteam card'><div class='rhead'>"
             f"<span class='rname'>{_esc(t['name'])}</span>"
             f"<span class='rgm'>{_esc(t['gm'])} · {t['rec']}</span></div>"
+            f"{bio}"
             f"<ul class='rlist'>{''.join(lis)}</ul></div>")
     return "<div class='rosters'>" + "".join(cards) + "</div>"
 
@@ -392,6 +398,16 @@ thead th.l{text-align:left}
 .rlist li.starter .pl{font-weight:700}
 .rlist .mark{font-size:9px;font-weight:700;color:var(--accent-ink);
   background:var(--accent);border:1px solid var(--line);padding:1px 5px;letter-spacing:.05em}
+.biobox{border-bottom:2px solid var(--line);background:var(--surface)}
+.biobox>summary{cursor:pointer;list-style:none;padding:7px 14px;font-size:10px;
+  font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);
+  display:flex;align-items:center;gap:6px;user-select:none}
+.biobox>summary::-webkit-details-marker{display:none}
+.biobox>summary::before{content:"▸";font-size:11px}
+.biobox[open]>summary::before{content:"▾"}
+.biobox[open]>summary{color:var(--accent-ink);background:var(--accent)}
+.biobox .bio{margin:0;padding:10px 14px 12px;font-size:12.5px;line-height:1.5;
+  color:var(--ink);border-top:1px solid var(--line)}
 /* Chat */
 .chat{list-style:none;margin:0;padding:2px 0;max-height:600px;overflow-y:auto}
 .chat li{border-bottom:1px solid var(--line)}
