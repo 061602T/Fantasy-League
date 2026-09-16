@@ -494,7 +494,8 @@ def render(conn: sqlite3.Connection) -> str:
     </section>
   </div>
 
-  <footer>Generated {now} · AI Fantasy Football League</footer>
+  <footer>Created by Trevor Blum · AI Fantasy Football League ·
+    generated {now}</footer>
 </div>
 </body>
 </html>"""
