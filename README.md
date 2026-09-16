@@ -141,6 +141,7 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       test_email.py     offline tests for the emailer (mocked SMTP)
       backup_db.py      cron / on-demand DB backup CLI
       test_backup.py    offline tests for the backup helper
+      test_integrity.py offline tests for the integrity gate + restore
 
 ## Setup
 
@@ -183,14 +184,19 @@ re-cloning) can never touch or orphan the live league.
   Point `FFL_BACKUP_DIR` at storage **off the SD card** (USB/network): WAL keeps
   the DB uncorrupted at the SQLite layer through power loss, but physical SD-card
   corruption is below SQLite and can take the file *and* same-card backups.
-- **One-off backups:** `run_draft.py` calls the backup helper immediately after
-  the draft, since 120 non-deterministic picks can't be regenerated identically.
-  Future one-shot events (e.g. season init) should do the same.
+- **One-off backups:** `gen_personas.py` (after creating the league) and
+  `run_draft.py` (after the draft) each take an immediate backup, since those
+  non-reproducible real-API events can't be regenerated identically. The tick
+  also takes a dedicated backup when a champion is crowned.
 - **Not an export/import feature:** backups only restore the same DB
   byte-for-byte — there is no path to import test data into a real league.
-- **Startup integrity gate (planned, step 8):** the service should
-  `PRAGMA quick_check` on boot and refuse to run on a corrupt file, restoring the
-  newest verified backup instead. Helper not wired yet.
+- **Startup integrity gate (wired):** `db.preflight()` runs at the top of
+  `gen_personas`, `run_draft`, and `run_tick`. It `PRAGMA quick_check`s the DB
+  and, if corrupt, restores the newest *verified* backup via
+  `backup.restore_latest_backup()` (moving the corrupt file aside as
+  `*.corrupt-<ts>`); if no valid backup exists it refuses to run rather than
+  operate on a broken database. Covered by `scripts/test_integrity.py` (corrupts
+  a real DB and asserts recovery).
 
 ## Decisions locked in
 

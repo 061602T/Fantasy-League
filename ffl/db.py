@@ -169,3 +169,48 @@ def init_db(path: str = None) -> sqlite3.Connection:
     conn.executescript(SCHEMA)
     conn.commit()
     return conn
+
+
+def integrity_ok(path: str = None) -> bool:
+    """True if the SQLite file passes a quick integrity check.
+
+    A missing file counts as ok (nothing to corrupt yet -- a fresh start). A
+    file that won't open or fails PRAGMA quick_check counts as not-ok. Uses a
+    plain connection (no WAL/dir side effects).
+    """
+    path = path or config.DB_PATH
+    if path != ":memory:" and not os.path.exists(path):
+        return True
+    try:
+        conn = sqlite3.connect(path)
+        try:
+            row = conn.execute("PRAGMA quick_check").fetchone()
+            return bool(row) and row[0] == "ok"
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError:
+        return False
+
+
+def preflight(path: str = None, backup_dir: str = None) -> str:
+    """Boot-time gate: verify the DB, restoring the newest good backup if corrupt.
+
+    Returns a status string: 'fresh' (no DB yet -- nothing to check), 'ok', or
+    'restored:<backup path>'. Raises RuntimeError if the DB is corrupt and no
+    valid backup exists -- callers should refuse to run rather than operate on a
+    broken database. Run this BEFORE opening the DB for work.
+    """
+    path = path or config.DB_PATH
+    if path != ":memory:" and not os.path.exists(path):
+        return "fresh"
+    if integrity_ok(path):
+        return "ok"
+    from . import backup  # lazy: backup imports db, avoid an import cycle
+    restored = backup.restore_latest_backup(path, backup_dir)
+    if restored:
+        return f"restored:{restored}"
+    where = backup._backup_dir() if backup_dir is None else backup_dir
+    raise RuntimeError(
+        f"Database {path} failed its integrity check and no valid backup was "
+        f"found in {where} to restore from. Refusing to run on a corrupt "
+        f"database -- regenerate the league or restore a backup by hand.")

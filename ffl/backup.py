@@ -17,10 +17,11 @@ from __future__ import annotations
 
 import glob
 import os
+import shutil
 import sqlite3
 import time
 
-from . import config
+from . import config, db
 
 DEFAULT_BACKUP_DIR = os.path.join("~", "ffl-data", "backups")
 
@@ -77,6 +78,43 @@ def backup_db(db_path: str = None, backup_dir: str = None,
     if not quiet:
         print(f"Backed up {db_path} -> {dest} (quick_check ok; pruned {pruned}).")
     return dest
+
+
+def latest_good_backup(backup_dir: str = None):
+    """Newest snapshot that itself passes an integrity check, or None.
+
+    Dated filenames sort chronologically, so we check newest-first and skip any
+    backup that is itself corrupt.
+    """
+    backup_dir = os.path.expanduser(backup_dir) if backup_dir else _backup_dir()
+    for f in sorted(glob.glob(os.path.join(backup_dir, "league-*.db")), reverse=True):
+        if db.integrity_ok(f):
+            return f
+    return None
+
+
+def restore_latest_backup(db_path: str = None, backup_dir: str = None):
+    """Replace a corrupt DB with the newest good backup. Returns the backup used,
+    or None if there is no valid backup to restore from.
+
+    The corrupt file is moved aside (``.corrupt-<timestamp>``) for forensics
+    rather than deleted, and the live DB's stale ``-wal``/``-shm`` sidecars are
+    removed (the restored snapshot is self-contained).
+    """
+    db_path = db_path or config.DB_PATH
+    good = latest_good_backup(backup_dir)
+    if not good:
+        return None
+    if os.path.exists(db_path):
+        aside = f"{db_path}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}"
+        os.replace(db_path, aside)
+    shutil.copyfile(good, db_path)
+    for sfx in ("-wal", "-shm"):
+        try:
+            os.remove(db_path + sfx)
+        except OSError:
+            pass
+    return good
 
 
 def _prune(backup_dir: str, retain_days: int) -> int:
