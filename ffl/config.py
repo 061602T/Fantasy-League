@@ -115,8 +115,15 @@ DST_POINTS_ALLOWED_TIERS = [
 
 # --- Projections -----------------------------------------------------------
 # Recency-weighted rolling average of the last WINDOW games, most-recent-first.
+# Used for the draft pool / who-starts ranking (ffl/projections.py).
 PROJECTION_WEIGHTS = (0.5, 0.3, 0.2)
 PROJECTION_WINDOW = 3
+
+# Weekly score projection (ffl/scoreproj.py): a player's projected points for a
+# league week are the simple mean of their most recent SCORE_PROJ_WINDOW actual
+# weekly scores before that week. A statistical estimate from recent scoring --
+# not a prediction of the real NFL game and not the league's actual points.
+SCORE_PROJ_WINDOW = 4
 
 # --- Draft pool positional targets (from the brief, ~280 players) ----------
 POOL_TARGETS = {"QB": 16, "RB": 70, "WR": 90, "TE": 24, "K": 32, "DST": 32}

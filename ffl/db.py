@@ -162,6 +162,7 @@ def connect(path: str = None) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL;")
     conn.execute("PRAGMA synchronous = FULL;")
     conn.execute("PRAGMA foreign_keys = ON;")
+    _migrate(conn)
     return conn
 
 
@@ -169,10 +170,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
     """Additive, idempotent column migrations for DBs created before a change.
 
     CREATE TABLE IF NOT EXISTS never alters an existing table, so a database
-    from an earlier schema keeps its old column set. Each entry here adds a
-    nullable column only if it's missing, so re-running is a no-op.
+    from an earlier schema keeps its old column set. Each entry adds a nullable
+    column only if it's missing. Runs on every ``connect()`` (not just
+    ``init_db``), so a DB opened read-mostly for a backtest or a backup restore
+    is brought current too -- a table that doesn't exist yet is skipped.
     """
+    existing = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
     for table, column, decl in [("teams", "bio", "TEXT")]:
+        if table not in existing:
+            continue
         cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
@@ -180,11 +187,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 
 def init_db(path: str = None) -> sqlite3.Connection:
-    """Create the schema (idempotent) and return an open connection."""
+    """Create the schema (idempotent) and return an open connection.
+
+    ``connect`` already runs additive migrations; the schema here is authored
+    with the current columns, so a fresh DB needs no separate migration pass.
+    """
     conn = connect(path)
     conn.executescript(SCHEMA)
     conn.commit()
-    _migrate(conn)
     return conn
 
 

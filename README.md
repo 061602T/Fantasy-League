@@ -267,3 +267,30 @@ refreshes the dashboard.
 - **Championship backup:** the tick takes a dedicated explicit backup the moment
   a champion is crowned (a non-reproducible, high-value event), on top of the
   routine per-advance and cron backups.
+
+## Analytics (statistical estimates, not scores)
+
+Deterministic, statistical add-ons — no LLM calls, no extra API spend per tick.
+These are **estimates from historical scoring, not predictions of the real NFL
+games and not the league's actual points.** Built and validated one at a time.
+
+- **Weekly score projections** (`ffl/scoreproj.py`): the projected total the
+  dashboard shows as “proj N.N” beside each team's actual score.
+  - *Per player:* the simple mean of that player's most recent
+    `SCORE_PROJ_WINDOW` (default **4**) actual weekly scores *before* the target
+    week, from `player_weekly_scores`. “Most recent” spans the season boundary,
+    so an early-season week isn't projected off a single game. No prior game →
+    no projection (contributes 0, flagged as uncovered).
+  - *Byes:* a starter whose NFL team is idle that week is projected at 0 (they
+    can't score). Byes are known in advance from the schedule, so this isn't
+    hindsight — `scoreproj.teams_on_bye()` derives them from the loaded
+    schedule; the core math takes the bye set as an argument and stays pure.
+  - *Per team:* the sum of its starters' projections — the *actual* starters
+    when a lineup is set (a scored week), otherwise the optimal lineup by these
+    same projections (an upcoming week).
+  - *Validation (real 2025 backtest, `scripts/validate_scoreproj.py`):* over 104
+    team-weeks, **MAE ≈ 22 pts, bias ≈ +5 pts, corr ≈ 0.59** against actual team
+    totals. Bye-awareness is what makes it usable — without it the model reads
+    ~13 pts high on bye-heavy weeks (MAE ≈ 28). The residual +5 is genuine
+    game-day inactives, which recent form can't foresee. Offline tests:
+    `scripts/test_scoreproj.py`.

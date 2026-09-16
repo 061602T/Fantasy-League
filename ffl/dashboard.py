@@ -15,7 +15,7 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 
-from . import config, playoffs
+from . import config, playoffs, scoreproj
 
 DEFAULT_PATH = os.path.join("~", "ffl-data", "dashboard.html")
 
@@ -43,7 +43,7 @@ def _latest_final_week(conn):
     return row["w"] if row and row["w"] else None
 
 
-def _week_matchups(conn, week):
+def _week_matchups(conn, week, season_year=None):
     if not week:
         return []
     names = {r["team_id"]: r["team_name"]
@@ -52,12 +52,21 @@ def _week_matchups(conn, week):
         """SELECT home_team_id, away_team_id, home_points, away_points,
                   winner_team_id, status FROM matchups WHERE week=?
             ORDER BY matchup_id""", (week,)).fetchall()
+    # Statistical projected totals (recent-form, bye-aware) shown next to the
+    # actual score. teams_on_bye is guarded and returns {} on any data trouble.
+    season_year = season_year if season_year is not None else config.SEASON
+    bye = scoreproj.teams_on_bye(season_year, week)
     out = []
     for m in rows:
+        hp_proj = scoreproj.project_team(
+            conn, m["home_team_id"], season_year, week, bye_teams=bye)["proj"]
+        ap_proj = scoreproj.project_team(
+            conn, m["away_team_id"], season_year, week, bye_teams=bye)["proj"]
         out.append({
             "home": names.get(m["home_team_id"], "?"),
             "away": names.get(m["away_team_id"], "?"),
             "hp": m["home_points"], "ap": m["away_points"],
+            "hp_proj": hp_proj, "ap_proj": ap_proj,
             "home_win": m["winner_team_id"] == m["home_team_id"],
             "away_win": m["winner_team_id"] == m["away_team_id"],
             "final": m["status"] == "final",
@@ -184,6 +193,13 @@ def _standings_rows(rows):
     return "\n".join(out)
 
 
+def _proj_tag(proj) -> str:
+    """Small 'proj N.N' label for a team's projected total (blank if unknown)."""
+    if proj is None:
+        return ""
+    return f"<span class='sproj' title='recent-form projection'>proj {proj:.1f}</span>"
+
+
 def _matchup_cards(games):
     if not games:
         return "<p class='empty'>No games scored yet.</p>"
@@ -195,13 +211,15 @@ def _matchup_cards(games):
             hp = ap = "–"
         hcl = " won" if g["home_win"] else ""
         acl = " won" if g["away_win"] else ""
+        hpp = _proj_tag(g.get("hp_proj"))
+        app = _proj_tag(g.get("ap_proj"))
         cards.append(
             f"<div class='game'>"
             f"<div class='side{hcl}'><span class='sname'>{_esc(g['home'])}</span>"
-            f"<span class='sscore'>{hp}</span></div>"
+            f"<span class='sbox'><span class='sscore'>{hp}</span>{hpp}</span></div>"
             f"<div class='vs'>vs</div>"
             f"<div class='side{acl}'><span class='sname'>{_esc(g['away'])}</span>"
-            f"<span class='sscore'>{ap}</span></div>"
+            f"<span class='sbox'><span class='sscore'>{ap}</span>{app}</span></div>"
             f"</div>")
     return "<div class='games'>" + "".join(cards) + "</div>"
 
@@ -358,9 +376,12 @@ thead th.l{text-align:left}
 .game{background:var(--surface);border:2px solid var(--line);padding:12px 14px}
 .side{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:4px 0}
 .side .sname{font-weight:600}
+.side .sbox{display:flex;flex-direction:column;align-items:flex-end;line-height:1.05}
 .side .sscore{font-size:20px;font-weight:700;color:var(--muted)}
+.side .sproj{font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.02em}
 .side.won .sname{color:var(--ink);font-weight:700}
 .side.won .sscore{color:var(--accent)}
+.mnote{font-size:11.5px;color:var(--muted);margin:-6px 0 10px;font-weight:600}
 .vs{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;
   text-align:center;margin:2px 0;font-weight:700}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:18px}
@@ -435,7 +456,7 @@ def render(conn: sqlite3.Connection) -> str:
     shown_week = week or (lg["current_week"] if lg else 0) or 1
 
     standings = _standings(conn)
-    games = _week_matchups(conn, shown_week)
+    games = _week_matchups(conn, shown_week, season)
     rosters = _rosters(conn)
     moves = _recent_moves(conn)
     chat = _recent_chat(conn)
@@ -492,6 +513,9 @@ def render(conn: sqlite3.Connection) -> str:
 
   <section>
     <p class="eyebrow">{_esc(mlabel)}</p>
+    <p class="mnote">“proj” is a statistical estimate of each team’s total from its
+      starters’ recent scoring (last {config.SCORE_PROJ_WINDOW} games, bye-adjusted)
+      — not a prediction of the real games.</p>
     {_matchup_cards(games)}
   </section>
 
