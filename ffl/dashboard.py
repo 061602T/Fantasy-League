@@ -291,7 +291,7 @@ def _chat_feed(chat):
             items.append(f"<li class='sysmsg'><span class='line'>{_esc(msg)}</span></li>")
             continue
         tcls = " trade" if kind == "trade_talk" else ""
-        chip = (f"<span class='chip' style='background:hsl({_hue(who)} 45% 42%)'>"
+        chip = (f"<span class='chip' style='background:hsl({_hue(who)} 72% 40%)'>"
                 f"{_esc(_initials(who))}</span>")
         items.append(
             f"<li class='msg{tcls}'>{chip}<div class='body'>"
@@ -302,14 +302,14 @@ def _chat_feed(chat):
 
 _CSS = """
 :root{
-  --bg:#e7d9bf; --surface:#f6efe1; --surface-2:#eee2cc; --ink:#33291b;
-  --muted:#8a7454; --line:#dbc9a6; --accent:#c96a1c; --accent-soft:#f3e0c8;
-  --win:#4f7a2e; --loss:#b8442b; --gold:#b07d18;
+  --bg:#d8c290; --surface:#f0e2ba; --surface-2:#e4d09c; --ink:#1a1204;
+  --muted:#5c4718; --line:#1a1204; --accent:#e2560a; --accent-ink:#1a1204;
+  --win:#0f6b0f; --loss:#b21212; --gold:#7a5c00;
 }
 @media (prefers-color-scheme: dark){:root{
-  --bg:#1c160e; --surface:#271f15; --surface-2:#312817; --ink:#f0e5d1;
-  --muted:#b3a081; --line:#3d3122; --accent:#e6883a; --accent-soft:#352817;
-  --win:#84b766; --loss:#e2805f; --gold:#d9b455;
+  --bg:#0a0700; --surface:#151000; --surface-2:#201800; --ink:#f2dca4;
+  --muted:#c19a44; --line:#f2dca4; --accent:#ff7d1a; --accent-ink:#0a0700;
+  --win:#54e054; --loss:#ff6060; --gold:#ffcf4a;
 }}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
@@ -318,95 +318,96 @@ body{margin:0;background:var(--bg);color:var(--ink);
 h1,h2,.rank,.sscore,.scorebar b{font-family:"Oswald","IBM Plex Sans",sans-serif}
 .num,.rec,.faab,.sscore,.rank{font-variant-numeric:tabular-nums}
 .scorebar{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 18px;
-  padding:18px 20px;background:var(--surface);border:1px solid var(--line);
-  border-radius:12px;border-left:5px solid var(--accent)}
-.scorebar h1{margin:0;font-size:26px;font-weight:700;letter-spacing:.5px;
-  text-transform:uppercase}
-.scorebar .meta{color:var(--muted);font-size:14px;display:flex;gap:14px;flex-wrap:wrap}
-.scorebar .meta b{color:var(--ink);font-weight:600}
-.champ{flex-basis:100%;margin-top:6px;font-family:"Oswald",sans-serif;
-  font-size:18px;font-weight:600;letter-spacing:.4px;color:var(--gold)}
-section{margin-top:26px}
-.eyebrow{font-size:12px;letter-spacing:.12em;text-transform:uppercase;
-  color:var(--accent);font-weight:600;margin:0 0 10px}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:12px}
+  padding:16px 18px;background:var(--surface);border:2px solid var(--line);
+  border-left:8px solid var(--accent)}
+.scorebar h1{margin:0;font-size:27px;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
+.scorebar .meta{color:var(--ink);font-size:14px;display:flex;gap:14px;flex-wrap:wrap;font-weight:500}
+.scorebar .meta b{color:var(--ink);font-weight:700}
+.champ{flex-basis:100%;margin-top:8px;font-family:"Oswald",sans-serif;font-size:17px;
+  font-weight:700;letter-spacing:.4px;color:var(--accent-ink);background:var(--accent);
+  border:2px solid var(--line);padding:5px 10px}
+section{margin-top:24px}
+.eyebrow{font-size:12px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;
+  color:var(--accent-ink);background:var(--accent);border:2px solid var(--line);
+  display:inline-block;padding:3px 9px;margin:0 0 12px}
+.card{background:var(--surface);border:2px solid var(--line)}
 .tablewrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse;min-width:440px}
-thead th{font-size:11px;letter-spacing:.08em;text-transform:uppercase;
-  color:var(--muted);text-align:right;padding:12px 14px;font-weight:600;
-  border-bottom:1px solid var(--line)}
+thead th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink);
+  text-align:right;padding:10px 12px;font-weight:700;border-bottom:2px solid var(--line);
+  background:var(--surface-2)}
 thead th.l{text-align:left}
-.row td{padding:11px 14px;text-align:right;border-bottom:1px solid var(--line)}
+.row td{padding:10px 12px;text-align:right;border-bottom:1px solid var(--line)}
 .row:last-child td{border-bottom:0}
-.row .rank{color:var(--muted);font-size:15px;text-align:left;width:34px}
-.row.leader .rank{color:var(--gold)}
+.row.leader td{background:var(--surface-2)}
+.row .rank{color:var(--muted);font-size:15px;font-weight:700;text-align:left;width:34px}
+.row.leader .rank{color:var(--accent)}
 .team{text-align:left!important;display:flex;flex-direction:column;line-height:1.25}
-.tname{font-weight:600}
+.tname{font-weight:700}
 .gm{font-size:12px;color:var(--muted)}
-.rec{font-weight:600}
-.faab{color:var(--accent)}
+.rec{font-weight:700}
+.faab{color:var(--accent);font-weight:700}
 .muted{color:var(--muted)}
 .games{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
-.game{background:var(--surface);border:1px solid var(--line);border-radius:12px;
-  padding:14px 16px}
+.game{background:var(--surface);border:2px solid var(--line);padding:12px 14px}
 .side{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:4px 0}
-.side .sname{font-weight:500}
-.side .sscore{font-size:20px;font-weight:600;color:var(--muted)}
-.side.won .sname{color:var(--ink);font-weight:600}
-.side.won .sscore{color:var(--win)}
+.side .sname{font-weight:600}
+.side .sscore{font-size:20px;font-weight:700;color:var(--muted)}
+.side.won .sname{color:var(--ink);font-weight:700}
+.side.won .sscore{color:var(--accent)}
 .vs{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;
-  text-align:center;margin:2px 0}
-.cols{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  text-align:center;margin:2px 0;font-weight:700}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:18px}
 @media (max-width:640px){.cols{grid-template-columns:1fr}}
-.moves{list-style:none;margin:0;padding:6px 0}
+.moves{list-style:none;margin:0;padding:4px 0}
 .moves li{display:flex;align-items:flex-start;gap:10px;padding:11px 16px;
   border-bottom:1px solid var(--line)}
 .moves li:last-child{border-bottom:0}
 .badge{font-size:10px;font-weight:700;letter-spacing:.06em;padding:3px 7px;
-  border-radius:5px;flex-shrink:0;margin-top:1px}
-.badge.trade{background:var(--accent-soft);color:var(--accent)}
-.badge.waiver{background:var(--surface-2);color:var(--muted)}
+  border:2px solid var(--line);flex-shrink:0;margin-top:1px}
+.badge.trade{background:var(--accent);color:var(--accent-ink)}
+.badge.waiver{background:var(--surface-2);color:var(--ink)}
 .mv{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
 .mvhead{display:flex;justify-content:space-between;align-items:center;gap:8px;
-  font-size:14px;font-weight:600}
+  font-size:14px;font-weight:700}
 .mvline{font-size:13px;overflow-wrap:anywhere}
-.mvline b{font-weight:600}
-.mvline .add{color:var(--win);font-weight:600;margin-right:9px}
-.mvline .drop{color:var(--loss);font-weight:600;margin-right:9px}
-.mvline .fa{color:var(--accent);font-weight:600}
+.mvline b{font-weight:700}
+.mvline .add{color:var(--win);font-weight:700;margin-right:9px}
+.mvline .drop{color:var(--loss);font-weight:700;margin-right:9px}
+.mvline .fa{color:var(--accent);font-weight:700}
 .st{font-weight:700}.st.ok{color:var(--win)}.st.no{color:var(--loss)}
 /* Rosters */
 .rosters{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
 .rteam{padding:0;overflow:hidden}
 .rhead{display:flex;justify-content:space-between;align-items:baseline;gap:8px;
-  padding:12px 16px;border-bottom:1px solid var(--line);background:var(--surface-2)}
-.rname{font-weight:600;font-family:"Oswald",sans-serif;letter-spacing:.3px}
+  padding:11px 14px;border-bottom:2px solid var(--line);background:var(--surface-2)}
+.rname{font-weight:700;font-family:"Oswald",sans-serif;letter-spacing:.3px}
 .rgm{font-size:12px;color:var(--muted)}
-.rlist{list-style:none;margin:0;padding:5px 0}
-.rlist li{display:flex;align-items:center;gap:10px;padding:5px 16px;font-size:13.5px}
+.rlist{list-style:none;margin:0;padding:4px 0}
+.rlist li{display:flex;align-items:center;gap:10px;padding:5px 14px;font-size:13.5px}
 .rlist .pos{flex:0 0 34px;font-size:10px;font-weight:700;letter-spacing:.05em;
   color:var(--muted);text-transform:uppercase}
 .rlist .pl{flex:1;min-width:0}
 .rlist li.bench .pl{color:var(--muted)}
-.rlist li.starter .pl{font-weight:600}
-.rlist .mark{font-size:9px;font-weight:700;color:var(--accent);
-  background:var(--accent-soft);padding:2px 5px;border-radius:4px;letter-spacing:.05em}
+.rlist li.starter .pl{font-weight:700}
+.rlist .mark{font-size:9px;font-weight:700;color:var(--accent-ink);
+  background:var(--accent);border:1px solid var(--line);padding:1px 5px;letter-spacing:.05em}
 /* Chat */
-.chat{list-style:none;margin:0;padding:4px 0;max-height:600px;overflow-y:auto}
+.chat{list-style:none;margin:0;padding:2px 0;max-height:600px;overflow-y:auto}
 .chat li{border-bottom:1px solid var(--line)}
 .chat li:last-child{border-bottom:0}
 .msg{display:flex;gap:11px;align-items:flex-start;padding:11px 16px}
-.chip{flex:0 0 30px;width:30px;height:30px;border-radius:50%;color:#fff;
-  font-family:"Oswald",sans-serif;font-size:12px;font-weight:600;letter-spacing:.3px;
+.chip{flex:0 0 30px;width:30px;height:30px;color:#fff;border:2px solid var(--line);
+  font-family:"Oswald",sans-serif;font-size:12px;font-weight:700;letter-spacing:.3px;
   display:flex;align-items:center;justify-content:center}
 .msg .body{display:flex;flex-direction:column;gap:2px;min-width:0}
-.msg .who{font-size:12px;font-weight:600;color:var(--ink)}
-.msg.trade .who{color:var(--gold)}
+.msg .who{font-size:12px;font-weight:700;color:var(--ink)}
+.msg.trade .who{color:var(--accent)}
 .msg .line{font-size:14px;line-height:1.45;overflow-wrap:anywhere}
 .sysmsg{padding:9px 16px;text-align:center}
-.sysmsg .line{font-size:12.5px;color:var(--muted);font-style:italic}
+.sysmsg .line{font-size:12.5px;color:var(--muted);font-weight:600}
 .empty{color:var(--muted);padding:16px;margin:0}
-footer{margin-top:26px;color:var(--muted);font-size:12px;text-align:center}
+footer{margin-top:24px;color:var(--muted);font-size:12px;text-align:center;font-weight:600}
 """
 
 
