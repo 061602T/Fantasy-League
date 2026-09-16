@@ -167,11 +167,13 @@ def _free_agents(conn, season_year, week, limit=24):
 
 
 def _recent_chat(conn, limit=24):
-    rows = list(reversed(conn.execute(
+    # Newest first (most recent messages on top). A reply can therefore appear
+    # above its parent -- the quoted preview keeps it readable either way.
+    rows = conn.execute(
         """SELECT c.chat_id, c.event_type, c.message, c.created_at, c.reply_to,
                   t.gm_name
              FROM chat_log c LEFT JOIN teams t ON t.team_id = c.team_id
-            ORDER BY c.chat_id DESC LIMIT ?""", (limit,)).fetchall()))
+            ORDER BY c.chat_id DESC LIMIT ?""", (limit,)).fetchall()
     # Look up the parent of any reply (it may be older than the shown window),
     # so a reply can render a quoted preview of the message it answers.
     parent_ids = {r["reply_to"] for r in rows if r["reply_to"]}
