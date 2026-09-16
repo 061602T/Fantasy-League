@@ -51,10 +51,31 @@ You are inventing a vivid, memorable persona for a general manager (GM) in an \
 personality -- opinions, a voice, quirks. Avoid generic sports cliches and \
 avoid real NFL people. Make this GM distinct.
 
+This is a real fantasy league, so these characters trash-talk. A persona can be \
+cocky, crude, and foul-mouthed (mild profanity is fine) if that's who they are \
+-- don't make everyone corporate-polite. Keep the edge about football and team \
+management; never build in slurs, hate speech, or attacks on people's real \
+lives. Their catchphrase should sound like something a real person would \
+actually post in a league group chat.
+
 Return a JSON object with exactly these fields:
   "team_name":       the franchise name -- punchy, 1-4 words, no year/number.
   "gm_name":         the GM's name (a fictional person's full name).
   "personality":     1-2 vivid sentences on how they run their team.
+  "bio":             4-6 sentences of invented PERSONAL lore for this fictional
+                     character -- and make it MESSY. This is a raunchy roast
+                     league, so give them real flaws and baggage: a gambling
+                     problem, a couple of bitter divorces and a much-younger
+                     second (or third) wife, a mountain of debt, a petty crime
+                     or scandal, a substance they lean on too hard, a feud, a
+                     humiliating origin story, delusions of grandeur. Specific,
+                     dark, and funny beats generic and safe -- this is the
+                     ammunition rivals will roast them with in group chat.
+                     Invent freely; it is pure fiction, played for comedy.
+                     Limits: no real or identifiable people, nothing sexually
+                     explicit, and never build the character around real
+                     protected traits (race, religion, sex, gender,
+                     orientation, disability).
   "risk_tolerance":  one of "boom-bust", "balanced", "safe-floor".
   "valuation_bias":  a short quirk in how they value players,
                      e.g. "overvalues rookies" or "won't draft kickers early".
@@ -111,6 +132,7 @@ def _normalize_persona(data: dict) -> dict:
         "team_name": team,
         "gm_name": gm,
         "personality": (data.get("personality") or "").strip(),
+        "bio": (data.get("bio") or "").strip(),
         "risk_tolerance": _coerce_enum(data.get("risk_tolerance"),
                                        RISK_TOLERANCES, "balanced"),
         "valuation_bias": (data.get("valuation_bias") or "").strip(),
@@ -210,6 +232,7 @@ def _collision_message(personas, idx, group, field, contested, rnd) -> dict:
         f"You are {me['gm_name']}, GM of \"{me['team_name']}\". "
         f"Persona: {me['personality']} Chattiness: {me['chattiness']}.\n"
         f"Speak in character, in the first person, in 1-2 sentences."
+        + llm.VOICE
     )
     user = (
         f'You and {", ".join(rivals)} independently picked the same {kind}: '
@@ -231,6 +254,7 @@ def _revise_name(personas, idx, field, contested, taken) -> dict:
     system = (
         f"You are {me['gm_name']}, GM of \"{me['team_name']}\". "
         f"Persona: {me['personality']}\nStay in character."
+        + llm.VOICE
     )
     used = ", ".join(sorted(_denorm_sample(personas, field)))
     user = (
@@ -270,13 +294,13 @@ def persist_teams(conn: sqlite3.Connection, personas: list[dict],
     ids = []
     for p, slot in zip(personas, draft_slots):
         cur = conn.execute(
-            """INSERT INTO teams(team_name, gm_name, personality, risk_tolerance,
-                 valuation_bias, chattiness, draft_slot, faab_budget,
-                 faab_remaining, persona_json)
-               VALUES(?,?,?,?,?,?,?,?,?,?)""",
-            (p["team_name"], p["gm_name"], p["personality"], p["risk_tolerance"],
-             p["valuation_bias"], p["chattiness"], slot, config.FAAB_BUDGET,
-             config.FAAB_BUDGET, json.dumps(p.get("_raw", p))),
+            """INSERT INTO teams(team_name, gm_name, personality, bio,
+                 risk_tolerance, valuation_bias, chattiness, draft_slot,
+                 faab_budget, faab_remaining, persona_json)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (p["team_name"], p["gm_name"], p["personality"], p.get("bio", ""),
+             p["risk_tolerance"], p["valuation_bias"], p["chattiness"], slot,
+             config.FAAB_BUDGET, config.FAAB_BUDGET, json.dumps(p.get("_raw", p))),
         )
         ids.append(cur.lastrowid)
     conn.commit()

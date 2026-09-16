@@ -20,11 +20,12 @@ written to chat_log (event_type 'draft').
 from __future__ import annotations
 
 import json
+import random
 import sqlite3
 
 import pandas as pd
 
-from . import config, llm, projections, store
+from . import chat, config, llm, projections, store
 
 # Max players per position a team may roster (keeps rosters sane & legal).
 POSITION_CAPS = {"QB": 3, "RB": 8, "WR": 8, "TE": 3, "K": 2, "DST": 2}
@@ -160,6 +161,7 @@ def choose_pick(team: sqlite3.Row, rnd: int, overall: int, picks_left: int,
         f"Risk tolerance: {team['risk_tolerance']}. Valuation quirk: "
         f"{team['valuation_bias']}. Draft in character, but build a team that "
         f"can win: fill a legal starting lineup and don't waste picks."
+        + llm.VOICE
     )
     user = (
         f"Round {rnd}, overall pick #{overall}. You have {picks_left} picks "
@@ -184,6 +186,68 @@ def choose_pick(team: sqlite3.Row, rnd: int, overall: int, picks_left: int,
         return fallback_id, ""
 
 
+# --- Draft-day reactions ---------------------------------------------------
+
+def _pick_detail(row, menu, holes, need_str: str) -> str:
+    """Facts a rival GM needs to judge a pick: need filled? value passed over?
+
+    `holes` is the picking team's mandatory needs *before* this pick, so a
+    positive hole at the drafted position means the pick addressed a real need.
+    The menu is projection-sorted, so any listed player projected clearly above
+    the pick is genuinely better value the GM chose to pass on (a reach signal).
+    """
+    pos = row["position"]
+    picked_proj = float(row["proj_ppg"])
+    higher = [m for m in menu.itertuples(index=False)
+              if float(m.proj_ppg) > picked_proj + 0.1 and m.name != row["name"]][:3]
+    bits = []
+    if holes.get(pos, 0) > 0:
+        bits.append(f"It filled a starting {pos} need.")
+    elif need_str and need_str != "none":
+        bits.append(f"A luxury pick -- they still need {need_str}.")
+    if higher:
+        passed = ", ".join(f"{m.name} ({m.position}, proj {float(m.proj_ppg):.1f})"
+                           for m in higher)
+        bits.append(f"Still on the board, projected higher: {passed}.")
+    else:
+        bits.append("It was the best value on the board.")
+    return " ".join(bits)
+
+
+def _maybe_draft_banter(conn, teams, pick, row, menu, holes, need_str,
+                        banter_prob, rng, use_gate) -> list[dict]:
+    """Occasionally let a few rival GMs react to a notable pick (prob-gated).
+
+    Bounds cost three ways: the per-pick probability gate here, a random 1-3
+    rival subset, then the usual Haiku "do you want to speak?" gate inside
+    react_to_event. Returns any posted messages (event_type 'banter').
+    """
+    if banter_prob <= 0 or rng.random() >= banter_prob:
+        return []
+
+    picker = teams[pick["team_id"]]
+    headline = (f"Draft R{pick['round']}.{pick['pick_in_round']} (#{pick['overall']}): "
+                f"{picker['gm_name']} ({picker['team_name']}) took {row['name']} "
+                f"({row['position']}, proj {float(row['proj_ppg']):.1f} ppg).")
+    detail = _pick_detail(row, menu, holes, need_str)
+
+    others = [tid for tid in teams if tid != pick["team_id"]]
+    rng.shuffle(others)
+    reactors = others[:rng.randint(1, min(3, len(others)))]
+
+    # Give each reactor their own angle: the picker's own pick, and -- the
+    # sharpest hook -- whether the reactor still needs that same position.
+    involvement = {pick["team_id"]: "this was YOUR pick"}
+    for tid in reactors:
+        r_holes = mandatory_holes(roster_counts(conn, tid))
+        if r_holes.get(row["position"], 0) > 0:
+            involvement[tid] = (f"you also still need a starting {row['position']}, "
+                                f"and {picker['gm_name']} just grabbed one off the board")
+
+    return chat.react_to_event(conn, headline, detail, involvement=involvement,
+                               rounds=1, team_ids=reactors, use_gate=use_gate)
+
+
 # --- Orchestration ---------------------------------------------------------
 
 def _available(conn, pool: pd.DataFrame) -> pd.DataFrame:
@@ -193,13 +257,20 @@ def _available(conn, pool: pd.DataFrame) -> pd.DataFrame:
 
 
 def run_draft(conn: sqlite3.Connection, force: bool = False,
-              progress=None, pool: pd.DataFrame = None) -> dict:
+              progress=None, pool: pd.DataFrame = None,
+              banter_prob: float = None, rng=random, use_gate: bool = True) -> dict:
     """Run the full snake draft, persisting picks, rosters, and pick quips.
 
     Returns {picks: [...]} summary. Idempotent unless force=True. `pool` may be
     supplied (columns entity_id/name/position/team/proj_ppg/n_games) to avoid
     rebuilding it from nflverse -- used by the offline tests.
+
+    `banter_prob` is the per-pick chance a notable pick draws live rival
+    reactions (defaults to config.DRAFT_CHAT_PROB; pass 0 to disable, e.g. in
+    the offline tests, which don't stub the chat model).
     """
+    if banter_prob is None:
+        banter_prob = config.DRAFT_CHAT_PROB
     existing = conn.execute("SELECT COUNT(*) FROM draft_picks").fetchone()[0]
     if existing and not force:
         raise RuntimeError(
@@ -245,10 +316,11 @@ def run_draft(conn: sqlite3.Connection, force: bool = False,
                 menu = available.sort_values("proj_ppg", ascending=False) \
                                 .head(30).reset_index(drop=True)
 
+        holes = mandatory_holes(counts)
+        need_str = ", ".join(f"{pos} x{n}" for pos, n in holes.items() if n) or "none"
         entity_id, comment = choose_pick(
             team, pick["round"], pick["overall"], picks_left,
-            _roster_summary(conn, team["team_id"]),
-            mandatory_holes(counts), menu)
+            _roster_summary(conn, team["team_id"]), holes, menu)
 
         row = pool[pool["entity_id"] == entity_id].iloc[0]
         conn.execute(
@@ -274,5 +346,10 @@ def run_draft(conn: sqlite3.Connection, force: bool = False,
         summary.append(entry)
         if progress:
             progress(entry)
+
+        # Occasionally, a few rivals chirp about a notable pick (prob-gated so
+        # the draft stays lively without a reaction on all 120 picks).
+        _maybe_draft_banter(conn, teams, pick, row, menu, holes, need_str,
+                            banter_prob, rng, use_gate)
 
     return {"picks": summary}

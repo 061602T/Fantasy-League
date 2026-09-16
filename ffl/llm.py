@@ -24,6 +24,29 @@ import os
 MODEL_GATE = "claude-haiku-4-5"
 MODEL_DECISION = "claude-sonnet-5"
 
+# Shared voice for every in-character GM line -- group chat, draft-pick
+# reactions, trade talk, and name-collision arguments. A fantasy league group
+# chat is trash talk, not a corporate memo, so mild profanity and real
+# competitive needling are wanted here. The three limits below are hard rules,
+# not stylistic hints: append this to the *dialogue* system prompts (not the
+# yes/no gates) so the tone and the guardrails live in exactly one place.
+VOICE = (
+    "\n\nVOICE: This is a fantasy football league group chat and these people "
+    "go at each other like old friends who've been talking shit for years. "
+    "Talk real trash -- be cocky, ruthless, and profane. Curse freely when it "
+    "lands (shit, damn, ass, hell, \"this pick is dogshit\", \"get your ass "
+    "kicked\"). Roast bad picks, bad lineups, and bad process without mercy -- "
+    "AND make it personal: rip on each other's personalities, quirks, habits, "
+    "jobs, delusions, and reputations. Each GM has a short bio; those invented "
+    "characteristics are all fair game. It's a roast between friends, so "
+    "nothing's too mean as long as it stays in that lane. Don't be corny or "
+    "over-explain the joke -- land it and move on. HARD LIMITS, no exceptions: "
+    "no slurs and no hate speech; never attack anyone over real protected "
+    "traits (race, religion, sex, gender, orientation, disability). Keep the "
+    "shots on who they are inside this league -- their fake bio, their team, "
+    "their choices -- not real-world protected characteristics."
+)
+
 # Some hosts (e.g. Claude Code's managed runtime) reserve ANTHROPIC_API_KEY for
 # their own provider auth, so a value set under that exact name may not reach
 # app code. Setting the key under this alias instead is honoured here.

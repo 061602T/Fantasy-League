@@ -2,8 +2,9 @@
 
 The tick loop regenerates this each run; a human opens it in a browser (or the
 Pi serves it). Pure rendering -- no API calls. Standings, the latest week's
-matchups, recent roster moves, and the group chat, in a scoreboard treatment
-that works in light and dark and down to phone width.
+matchups, every team's roster (starters flagged), recent moves, and the group
+chat, in a scoreboard treatment that works in light and dark and down to phone
+width.
 
 Path: FFL_DASHBOARD_PATH, default ~/ffl-data/dashboard.html.
 """
@@ -65,25 +66,55 @@ def _week_matchups(conn, week):
 
 
 def _recent_moves(conn, limit=8):
+    import json
     names = {r["team_id"]: r["team_name"]
              for r in conn.execute("SELECT team_id, team_name FROM teams")}
     rows = conn.execute(
-        """SELECT type, status, from_team_id, to_team_id, faab_bid, details_json,
-                  COALESCE(resolved_at, created_at) AS ts
-             FROM transactions
-            WHERE type IN ('trade','waiver_claim')
+        """SELECT type, status, from_team_id, to_team_id, faab_bid, details_json
+             FROM transactions WHERE type IN ('trade','waiver_claim')
             ORDER BY txn_id DESC LIMIT ?""", (limit,)).fetchall()
-    import json
-    out = []
+
+    parsed, pids = [], set()
     for r in rows:
         try:
             d = json.loads(r["details_json"]) if r["details_json"] else {}
         except ValueError:
             d = {}
-        out.append({"type": r["type"], "status": r["status"],
-                    "from": names.get(r["from_team_id"], ""),
-                    "to": names.get(r["to_team_id"], ""),
-                    "faab": r["faab_bid"], "detail": d})
+        parsed.append((r, d))
+        if r["type"] == "waiver_claim":
+            pids.update([d.get("add"), d.get("drop")])
+        else:
+            pids.update(d.get("a_gives", []) + d.get("b_gives", []))
+    pids = {p for p in pids if p}
+    pname = {}
+    if pids:
+        marks = ",".join("?" * len(pids))
+        pname = {x["player_id"]: x["name"] for x in conn.execute(
+            f"SELECT player_id, name FROM players WHERE player_id IN ({marks})",
+            list(pids))}
+
+    def nm(pid):
+        return pname.get(pid, pid or "?")
+
+    out = []
+    for r, d in parsed:
+        ok = r["status"] == "processed"
+        if r["type"] == "waiver_claim":
+            out.append({"kind": "waiver", "ok": ok,
+                        "team": names.get(r["to_team_id"], "?"),
+                        "add": nm(d.get("add")), "drop": nm(d.get("drop")),
+                        "faab": r["faab_bid"]})
+        else:
+            a = names.get(d.get("a"), names.get(r["from_team_id"], "?"))
+            b = names.get(d.get("b"), names.get(r["to_team_id"], "?"))
+            a_gets = [nm(x) for x in d.get("b_gives", [])]  # a receives b's players
+            b_gets = [nm(x) for x in d.get("a_gives", [])]
+            if d.get("b_faab"):
+                a_gets.append(f"${d['b_faab']} FAAB")
+            if d.get("a_faab"):
+                b_gets.append(f"${d['a_faab']} FAAB")
+            out.append({"kind": "trade", "ok": ok, "a": a, "b": b,
+                        "a_gets": a_gets, "b_gets": b_gets})
     return out
 
 
@@ -95,6 +126,42 @@ def _recent_chat(conn, limit=16):
     return list(reversed([{"who": r["gm_name"] or "League",
                            "kind": r["event_type"], "msg": r["message"]}
                           for r in rows]))
+
+
+_POS_ORDER = {"QB": 0, "RB": 1, "WR": 2, "TE": 3, "K": 4, "DST": 5}
+
+
+def _rosters(conn):
+    """Each team's active roster, grouped by position, starters flagged from the
+    most recent week that has a set lineup."""
+    row = conn.execute("SELECT MAX(week) w FROM lineups").fetchone()
+    lw = row["w"] if row else None
+    starters = set()
+    if lw is not None:
+        starters = {(r["team_id"], r["player_id"]) for r in conn.execute(
+            "SELECT team_id, player_id FROM lineups WHERE week=? AND slot!='BENCH'",
+            (lw,))}
+
+    out = []
+    teams = conn.execute(
+        "SELECT team_id, team_name, gm_name, bio, wins, losses, ties FROM teams "
+        "ORDER BY draft_slot").fetchall()
+    for t in teams:
+        players = conn.execute(
+            """SELECT p.player_id, p.name, p.position
+                 FROM rosters r JOIN players p ON p.player_id = r.player_id
+                WHERE r.team_id = ? AND r.dropped_week IS NULL""",
+            (t["team_id"],)).fetchall()
+        plist = [{"name": p["name"], "pos": p["position"],
+                  "starter": (t["team_id"], p["player_id"]) in starters}
+                 for p in players]
+        plist.sort(key=lambda x: (_POS_ORDER.get(x["pos"], 9),
+                                  not x["starter"], x["name"]))
+        out.append({"name": t["team_name"], "gm": t["gm_name"],
+                    "bio": t["bio"] or "",
+                    "rec": f"{t['wins']}–{t['losses']}–{t['ties']}",
+                    "players": plist})
+    return out
 
 
 # --- HTML pieces -----------------------------------------------------------
@@ -142,24 +209,80 @@ def _matchup_cards(games):
 def _moves_list(moves):
     if not moves:
         return "<p class='empty'>No trades or waiver claims yet.</p>"
+    none = "nothing"
     items = []
     for m in moves:
-        badge = "TRADE" if m["type"] == "trade" else "WAIVER"
-        bcl = "trade" if m["type"] == "trade" else "waiver"
-        ok = m["status"] in ("processed",)
-        st = "✓" if ok else "✗"
-        stcl = "ok" if ok else "no"
-        if m["type"] == "waiver_claim":
-            d = m["detail"]
-            text = (f"{_esc(m['to'])} — add/drop"
-                    + (f" for ${m['faab']}" if m["faab"] is not None else ""))
+        st = "✓" if m["ok"] else "✗"
+        stcl = "ok" if m["ok"] else "no"
+        if m["kind"] == "waiver":
+            badge = "<span class='badge waiver'>WAIVER</span>"
+            head = (f"<div class='mvhead'>{_esc(m['team'])}"
+                    f"<span class='st {stcl}'>{st}</span></div>")
+            faab = f"${m['faab']}" if m["faab"] is not None else ""
+            if m["ok"]:
+                body = head + (
+                    f"<div class='mvline'><span class='add'>&plus; "
+                    f"{_esc(m['add'])}</span>"
+                    f"<span class='drop'>&minus; {_esc(m['drop'])}</span>"
+                    f"<span class='fa'>{faab}</span></div>")
+            else:
+                body = head + (f"<div class='mvline muted'>missed on "
+                               f"{_esc(m['add'])} · {faab} bid</div>")
         else:
-            text = f"{_esc(m['from'])} ↔ {_esc(m['to'])}"
-        items.append(
-            f"<li><span class='badge {bcl}'>{badge}</span>"
-            f"<span class='mv'>{text}</span>"
-            f"<span class='st {stcl}'>{st}</span></li>")
+            badge = "<span class='badge trade'>TRADE</span>"
+            head = (f"<div class='mvhead'>{_esc(m['a'])} ⇄ {_esc(m['b'])}"
+                    f"<span class='st {stcl}'>{st}</span></div>")
+            if m["ok"]:
+                a_txt = ", ".join(m["a_gets"]) or none
+                b_txt = ", ".join(m["b_gets"]) or none
+                body = head + (
+                    f"<div class='mvline'><b>{_esc(m['a'])}</b> get "
+                    f"{_esc(a_txt)}</div>"
+                    f"<div class='mvline'><b>{_esc(m['b'])}</b> get "
+                    f"{_esc(b_txt)}</div>")
+            else:
+                body = head + "<div class='mvline muted'>talks fell through, no deal</div>"
+        items.append(f"<li>{badge}<div class='mv'>{body}</div></li>")
     return "<ul class='moves'>" + "".join(items) + "</ul>"
+
+
+def _roster_cards(rosters):
+    if not rosters:
+        return "<p class='empty'>No rosters yet.</p>"
+    cards = []
+    for t in rosters:
+        lis = []
+        for p in t["players"]:
+            cls = "starter" if p["starter"] else "bench"
+            mark = "<span class='mark'>ST</span>" if p["starter"] else ""
+            lis.append(f"<li class='{cls}'><span class='pos'>{_esc(p['pos'])}</span>"
+                       f"<span class='pl'>{_esc(p['name'])}</span>{mark}</li>")
+        bio = ""
+        if t["bio"]:
+            bio = (f"<details class='biobox'><summary>Bio &amp; baggage</summary>"
+                   f"<p class='bio'>{_esc(t['bio'])}</p></details>")
+        cards.append(
+            f"<div class='rteam card'><div class='rhead'>"
+            f"<span class='rname'>{_esc(t['name'])}</span>"
+            f"<span class='rgm'>{_esc(t['gm'])} · {t['rec']}</span></div>"
+            f"{bio}"
+            f"<ul class='rlist'>{''.join(lis)}</ul></div>")
+    return "<div class='rosters'>" + "".join(cards) + "</div>"
+
+
+def _hue(name: str) -> int:
+    h = 0
+    for ch in name:
+        h = (h * 31 + ord(ch)) % 360
+    return h
+
+
+def _initials(name: str) -> str:
+    parts = [p for p in name.split() if p]
+    if not parts:
+        return "?"
+    letters = parts[0][:1] + (parts[1][:1] if len(parts) > 1 else "")
+    return letters.upper()
 
 
 def _chat_feed(chat):
@@ -167,25 +290,32 @@ def _chat_feed(chat):
         return "<p class='empty'>The league chat is quiet.</p>"
     items = []
     for c in chat:
+        who, msg = c["who"], c["msg"]
         kind = c["kind"] or ""
-        cls = {"banter": "banter", "trade_talk": "trade", "waiver": "sys",
-               "collision": "sys", "system": "sys", "draft": "sys"}.get(kind, "sys")
+        # System/event lines (no author) read as centred notes, not speech.
+        if who == "League" or kind in ("system", "waiver", "collision", "draft"):
+            items.append(f"<li class='sysmsg'><span class='line'>{_esc(msg)}</span></li>")
+            continue
+        tcls = " trade" if kind == "trade_talk" else ""
+        chip = (f"<span class='chip' style='background:hsl({_hue(who)} 72% 40%)'>"
+                f"{_esc(_initials(who))}</span>")
         items.append(
-            f"<li class='{cls}'><span class='who'>{_esc(c['who'])}</span>"
-            f"<span class='line'>{_esc(c['msg'])}</span></li>")
+            f"<li class='msg{tcls}'>{chip}<div class='body'>"
+            f"<span class='who'>{_esc(who)}</span>"
+            f"<span class='line'>{_esc(msg)}</span></div></li>")
     return "<ul class='chat'>" + "".join(items) + "</ul>"
 
 
 _CSS = """
 :root{
-  --bg:#f3f6f2; --surface:#ffffff; --surface-2:#eef2ec; --ink:#15201a;
-  --muted:#5e6e63; --line:#e1e7de; --accent:#1c8347; --accent-soft:#e4f2ea;
-  --win:#1c8347; --loss:#bd4a30; --gold:#b9862a;
+  --bg:#d8c290; --surface:#f0e2ba; --surface-2:#e4d09c; --ink:#1a1204;
+  --muted:#5c4718; --line:#1a1204; --accent:#e2560a; --accent-ink:#1a1204;
+  --win:#0f6b0f; --loss:#b21212; --gold:#7a5c00;
 }
 @media (prefers-color-scheme: dark){:root{
-  --bg:#0d120f; --surface:#151b16; --surface-2:#1d241e; --ink:#e7ede8;
-  --muted:#8ea093; --line:#27302a; --accent:#43c176; --accent-soft:#17281d;
-  --win:#43c176; --loss:#e0785f; --gold:#dfb14e;
+  --bg:#0a0700; --surface:#151000; --surface-2:#201800; --ink:#f2dca4;
+  --muted:#c19a44; --line:#f2dca4; --accent:#ff7d1a; --accent-ink:#0a0700;
+  --win:#54e054; --loss:#ff6060; --gold:#ffcf4a;
 }}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
@@ -194,65 +324,106 @@ body{margin:0;background:var(--bg);color:var(--ink);
 h1,h2,.rank,.sscore,.scorebar b{font-family:"Oswald","IBM Plex Sans",sans-serif}
 .num,.rec,.faab,.sscore,.rank{font-variant-numeric:tabular-nums}
 .scorebar{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 18px;
-  padding:18px 20px;background:var(--surface);border:1px solid var(--line);
-  border-radius:12px;border-left:5px solid var(--accent)}
-.scorebar h1{margin:0;font-size:26px;font-weight:700;letter-spacing:.5px;
-  text-transform:uppercase}
-.scorebar .meta{color:var(--muted);font-size:14px;display:flex;gap:14px;flex-wrap:wrap}
-.scorebar .meta b{color:var(--ink);font-weight:600}
-.champ{flex-basis:100%;margin-top:6px;font-family:"Oswald",sans-serif;
-  font-size:18px;font-weight:600;letter-spacing:.4px;color:var(--gold)}
-section{margin-top:26px}
-.eyebrow{font-size:12px;letter-spacing:.12em;text-transform:uppercase;
-  color:var(--accent);font-weight:600;margin:0 0 10px}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:12px}
+  padding:16px 18px;background:var(--surface);border:2px solid var(--line);
+  border-left:8px solid var(--accent)}
+.scorebar h1{margin:0;font-size:27px;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
+.scorebar .meta{color:var(--ink);font-size:14px;display:flex;gap:14px;flex-wrap:wrap;font-weight:500}
+.scorebar .meta b{color:var(--ink);font-weight:700}
+.champ{flex-basis:100%;margin-top:8px;font-family:"Oswald",sans-serif;font-size:17px;
+  font-weight:700;letter-spacing:.4px;color:var(--accent-ink);background:var(--accent);
+  border:2px solid var(--line);padding:5px 10px}
+section{margin-top:24px}
+.eyebrow{font-size:12px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;
+  color:var(--accent-ink);background:var(--accent);border:2px solid var(--line);
+  display:inline-block;padding:3px 9px;margin:0 0 12px}
+.card{background:var(--surface);border:2px solid var(--line)}
 .tablewrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse;min-width:440px}
-thead th{font-size:11px;letter-spacing:.08em;text-transform:uppercase;
-  color:var(--muted);text-align:right;padding:12px 14px;font-weight:600;
-  border-bottom:1px solid var(--line)}
+thead th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink);
+  text-align:right;padding:10px 12px;font-weight:700;border-bottom:2px solid var(--line);
+  background:var(--surface-2)}
 thead th.l{text-align:left}
-.row td{padding:11px 14px;text-align:right;border-bottom:1px solid var(--line)}
+.row td{padding:10px 12px;text-align:right;border-bottom:1px solid var(--line)}
 .row:last-child td{border-bottom:0}
-.row .rank{color:var(--muted);font-size:15px;text-align:left;width:34px}
-.row.leader .rank{color:var(--gold)}
+.row.leader td{background:var(--surface-2)}
+.row .rank{color:var(--muted);font-size:15px;font-weight:700;text-align:left;width:34px}
+.row.leader .rank{color:var(--accent)}
 .team{text-align:left!important;display:flex;flex-direction:column;line-height:1.25}
-.tname{font-weight:600}
+.tname{font-weight:700}
 .gm{font-size:12px;color:var(--muted)}
-.rec{font-weight:600}
-.faab{color:var(--accent)}
+.rec{font-weight:700}
+.faab{color:var(--accent);font-weight:700}
 .muted{color:var(--muted)}
 .games{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
-.game{background:var(--surface);border:1px solid var(--line);border-radius:12px;
-  padding:14px 16px}
+.game{background:var(--surface);border:2px solid var(--line);padding:12px 14px}
 .side{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:4px 0}
-.side .sname{font-weight:500}
-.side .sscore{font-size:20px;font-weight:600;color:var(--muted)}
-.side.won .sname{color:var(--ink);font-weight:600}
-.side.won .sscore{color:var(--win)}
+.side .sname{font-weight:600}
+.side .sscore{font-size:20px;font-weight:700;color:var(--muted)}
+.side.won .sname{color:var(--ink);font-weight:700}
+.side.won .sscore{color:var(--accent)}
 .vs{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;
-  text-align:center;margin:2px 0}
-.cols{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  text-align:center;margin:2px 0;font-weight:700}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:18px}
 @media (max-width:640px){.cols{grid-template-columns:1fr}}
-.moves{list-style:none;margin:0;padding:6px 0}
-.moves li{display:flex;align-items:center;gap:10px;padding:9px 16px;
+.moves{list-style:none;margin:0;padding:4px 0}
+.moves li{display:flex;align-items:flex-start;gap:10px;padding:11px 16px;
   border-bottom:1px solid var(--line)}
 .moves li:last-child{border-bottom:0}
 .badge{font-size:10px;font-weight:700;letter-spacing:.06em;padding:3px 7px;
-  border-radius:5px;flex-shrink:0}
-.badge.trade{background:var(--accent-soft);color:var(--accent)}
-.badge.waiver{background:var(--surface-2);color:var(--muted)}
-.mv{flex:1;font-size:14px}
+  border:2px solid var(--line);flex-shrink:0;margin-top:1px}
+.badge.trade{background:var(--accent);color:var(--accent-ink)}
+.badge.waiver{background:var(--surface-2);color:var(--ink)}
+.mv{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.mvhead{display:flex;justify-content:space-between;align-items:center;gap:8px;
+  font-size:14px;font-weight:700}
+.mvline{font-size:13px;overflow-wrap:anywhere}
+.mvline b{font-weight:700}
+.mvline .add{color:var(--win);font-weight:700;margin-right:9px}
+.mvline .drop{color:var(--loss);font-weight:700;margin-right:9px}
+.mvline .fa{color:var(--accent);font-weight:700}
 .st{font-weight:700}.st.ok{color:var(--win)}.st.no{color:var(--loss)}
-.chat{list-style:none;margin:0;padding:6px 0;max-height:520px;overflow-y:auto}
-.chat li{padding:8px 16px;border-bottom:1px solid var(--line)}
+/* Rosters */
+.rosters{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+.rteam{padding:0;overflow:hidden}
+.rhead{display:flex;justify-content:space-between;align-items:baseline;gap:8px;
+  padding:11px 14px;border-bottom:2px solid var(--line);background:var(--surface-2)}
+.rname{font-weight:700;font-family:"Oswald",sans-serif;letter-spacing:.3px}
+.rgm{font-size:12px;color:var(--muted)}
+.rlist{list-style:none;margin:0;padding:4px 0}
+.rlist li{display:flex;align-items:center;gap:10px;padding:5px 14px;font-size:13.5px}
+.rlist .pos{flex:0 0 34px;font-size:10px;font-weight:700;letter-spacing:.05em;
+  color:var(--muted);text-transform:uppercase}
+.rlist .pl{flex:1;min-width:0}
+.rlist li.bench .pl{color:var(--muted)}
+.rlist li.starter .pl{font-weight:700}
+.rlist .mark{font-size:9px;font-weight:700;color:var(--accent-ink);
+  background:var(--accent);border:1px solid var(--line);padding:1px 5px;letter-spacing:.05em}
+.biobox{border-bottom:2px solid var(--line);background:var(--surface)}
+.biobox>summary{cursor:pointer;list-style:none;padding:7px 14px;font-size:10px;
+  font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);
+  display:flex;align-items:center;gap:6px;user-select:none}
+.biobox>summary::-webkit-details-marker{display:none}
+.biobox>summary::before{content:"▸";font-size:11px}
+.biobox[open]>summary::before{content:"▾"}
+.biobox[open]>summary{color:var(--accent-ink);background:var(--accent)}
+.biobox .bio{margin:0;padding:10px 14px 12px;font-size:12.5px;line-height:1.5;
+  color:var(--ink);border-top:1px solid var(--line)}
+/* Chat */
+.chat{list-style:none;margin:0;padding:2px 0;max-height:600px;overflow-y:auto}
+.chat li{border-bottom:1px solid var(--line)}
 .chat li:last-child{border-bottom:0}
-.chat .who{display:block;font-size:12px;font-weight:600;color:var(--accent)}
-.chat li.sys .who{color:var(--muted)}
-.chat li.trade .who{color:var(--gold)}
-.chat .line{font-size:14px}
+.msg{display:flex;gap:11px;align-items:flex-start;padding:11px 16px}
+.chip{flex:0 0 30px;width:30px;height:30px;color:#fff;border:2px solid var(--line);
+  font-family:"Oswald",sans-serif;font-size:12px;font-weight:700;letter-spacing:.3px;
+  display:flex;align-items:center;justify-content:center}
+.msg .body{display:flex;flex-direction:column;gap:2px;min-width:0}
+.msg .who{font-size:12px;font-weight:700;color:var(--ink)}
+.msg.trade .who{color:var(--accent)}
+.msg .line{font-size:14px;line-height:1.45;overflow-wrap:anywhere}
+.sysmsg{padding:9px 16px;text-align:center}
+.sysmsg .line{font-size:12.5px;color:var(--muted);font-weight:600}
 .empty{color:var(--muted);padding:16px;margin:0}
-footer{margin-top:26px;color:var(--muted);font-size:12px;text-align:center}
+footer{margin-top:24px;color:var(--muted);font-size:12px;text-align:center;font-weight:600}
 """
 
 
@@ -265,6 +436,7 @@ def render(conn: sqlite3.Connection) -> str:
 
     standings = _standings(conn)
     games = _week_matchups(conn, shown_week)
+    rosters = _rosters(conn)
     moves = _recent_moves(conn)
     chat = _recent_chat(conn)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -323,6 +495,11 @@ def render(conn: sqlite3.Connection) -> str:
     {_matchup_cards(games)}
   </section>
 
+  <section>
+    <p class="eyebrow">Rosters</p>
+    {_roster_cards(rosters)}
+  </section>
+
   <div class="cols">
     <section>
       <p class="eyebrow">Recent moves</p>
@@ -334,7 +511,8 @@ def render(conn: sqlite3.Connection) -> str:
     </section>
   </div>
 
-  <footer>Generated {now} · AI Fantasy Football League</footer>
+  <footer>Created by Trevor Blum · AI Fantasy Football League ·
+    generated {now}</footer>
 </div>
 </body>
 </html>"""
