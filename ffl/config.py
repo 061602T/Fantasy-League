@@ -125,6 +125,13 @@ PROJECTION_WINDOW = 3
 # not a prediction of the real NFL game and not the league's actual points.
 SCORE_PROJ_WINDOW = 4
 
+# Matchup win probability (ffl/winprob.py): a normal-approximation on the score
+# margin using each team's season-so-far mean and variance of weekly totals.
+# WINPROB_DEFAULT_SD is the fallback week-to-week standard deviation used only
+# when there isn't enough scored history to estimate spread (an NFL-fantasy
+# team week is empirically ~28 pts sd). A statistical estimate, not a lock.
+WINPROB_DEFAULT_SD = 28.0
+
 # --- Draft pool positional targets (from the brief, ~280 players) ----------
 POOL_TARGETS = {"QB": 16, "RB": 70, "WR": 90, "TE": 24, "K": 32, "DST": 32}
 

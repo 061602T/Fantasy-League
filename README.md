@@ -294,3 +294,25 @@ games and not the league's actual points.** Built and validated one at a time.
     ~13 pts high on bye-heavy weeks (MAE ≈ 28). The residual +5 is genuine
     game-day inactives, which recent form can't foresee. Offline tests:
     `scripts/test_scoreproj.py`.
+
+- **Matchup win probability** (`ffl/winprob.py`): the “Upcoming — Week N”
+  section shows each side's chance of winning.
+  - *Model:* a normal-approximation on the margin. Each team's weekly total is
+    treated as `Normal(mean, sd²)` from its **season-so-far** actual totals, so
+    the margin is `Normal(mean_a−mean_b, sd_a²+sd_b²)` and
+    `P(A wins) = Φ((mean_a−mean_b) / √(sd_a²+sd_b²))` (Φ = standard-normal CDF).
+    The two sides' probabilities sum to 1 (a tie has ~0 probability under a
+    continuous model).
+  - *Spread when thin:* a team's `sd` is **floored at the pooled league sd**
+    (root-mean of per-team variances) so a freakishly tight early sample doesn't
+    make the model overconfident; with <2 games it falls back to that pooled sd,
+    then to `WINPROB_DEFAULT_SD`. Zero games → 50/50.
+  - *Validation (real 2025 backtest, `scripts/validate_winprob.py`):* over 52
+    regular-season matchups, **Brier 0.237** and **log loss 0.677 — both beating
+    the coin-flip baseline (0.250 / 0.693)** — with the favourite winning 63.5%
+    of the time. The sd-floor is what pulls log loss below the baseline (an
+    un-floored normal-approx is overconfident and loses to a coin flip on log
+    loss). Offline tests: `scripts/test_winprob.py`.
+  - *Note:* win % (season-long mean/variance) and “proj” (recent form) are
+    independent estimates, so a team can be favoured to win yet carry a lower
+    recent-form projection, or vice versa — they answer different questions.

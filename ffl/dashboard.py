@@ -15,7 +15,7 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 
-from . import config, playoffs, scoreproj
+from . import config, playoffs, scoreproj, winprob
 
 DEFAULT_PATH = os.path.join("~", "ffl-data", "dashboard.html")
 
@@ -191,6 +191,66 @@ def _standings_rows(rows):
             f"<td class='num faab'>${r['faab_remaining']}</td>"
             f"</tr>")
     return "\n".join(out)
+
+
+def _next_week(conn):
+    """The next regular-season week that still has an unplayed matchup, if any."""
+    row = conn.execute(
+        "SELECT MIN(week) w FROM matchups WHERE status != 'final' AND week <= ?",
+        (config.REGULAR_SEASON_WEEKS,)).fetchone()
+    return row["w"] if row and row["w"] else None
+
+
+def _upcoming(conn, week, season_year):
+    """Next week's matchups with win probability (winprob) and projected totals
+    (scoreproj) for each side."""
+    if not week:
+        return []
+    bye = scoreproj.teams_on_bye(season_year, week)
+    out = []
+    for r in winprob.matchup_winprobs(conn, week):
+        hp = scoreproj.project_team(conn, r["home_team_id"], season_year, week,
+                                    bye_teams=bye)["proj"]
+        ap = scoreproj.project_team(conn, r["away_team_id"], season_year, week,
+                                    bye_teams=bye)["proj"]
+        out.append({**r, "home_proj": hp, "away_proj": ap})
+    return out
+
+
+def _upcoming_cards(games):
+    if not games:
+        return "<p class='empty'>No upcoming games scheduled.</p>"
+    cards = []
+    for g in games:
+        hpct = round(g["home_wp"] * 100)
+        apct = round(g["away_wp"] * 100)
+        hfav = " fav" if g["home_wp"] >= g["away_wp"] else ""
+        afav = " fav" if g["away_wp"] > g["home_wp"] else ""
+        cards.append(
+            f"<div class='game'>"
+            f"<div class='side{hfav}'><span class='sname'>{_esc(g['home'])}</span>"
+            f"<span class='sbox'><span class='swp'>{hpct}%</span>"
+            f"{_proj_tag(g.get('home_proj'))}</span></div>"
+            f"<div class='vs'>vs</div>"
+            f"<div class='side{afav}'><span class='sname'>{_esc(g['away'])}</span>"
+            f"<span class='sbox'><span class='swp'>{apct}%</span>"
+            f"{_proj_tag(g.get('away_proj'))}</span></div>"
+            f"</div>")
+    return "<div class='games'>" + "".join(cards) + "</div>"
+
+
+def _upcoming_section(games, week) -> str:
+    """The whole 'Upcoming' section, or empty when the season has no next week."""
+    if not games:
+        return ""
+    return (
+        f'\n  <section>\n'
+        f'    <p class="eyebrow">Upcoming — Week {week}</p>\n'
+        f'    <p class="mnote">Win % is a statistical estimate from each team’s '
+        f'scoring so far (mean &amp; variance, normal-approximation) — not a lock. '
+        f'“proj” is the recent-form points estimate.</p>\n'
+        f'    {_upcoming_cards(games)}\n'
+        f'  </section>')
 
 
 def _proj_tag(proj) -> str:
@@ -378,9 +438,13 @@ thead th.l{text-align:left}
 .side .sname{font-weight:600}
 .side .sbox{display:flex;flex-direction:column;align-items:flex-end;line-height:1.05}
 .side .sscore{font-size:20px;font-weight:700;color:var(--muted)}
+.side .swp{font-size:20px;font-weight:700;color:var(--muted);font-variant-numeric:tabular-nums;
+  font-family:"Oswald","IBM Plex Sans",sans-serif}
 .side .sproj{font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.02em}
 .side.won .sname{color:var(--ink);font-weight:700}
 .side.won .sscore{color:var(--accent)}
+.side.fav .sname{color:var(--ink);font-weight:700}
+.side.fav .swp{color:var(--accent)}
 .mnote{font-size:11.5px;color:var(--muted);margin:-6px 0 10px;font-weight:600}
 .vs{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;
   text-align:center;margin:2px 0;font-weight:700}
@@ -457,6 +521,8 @@ def render(conn: sqlite3.Connection) -> str:
 
     standings = _standings(conn)
     games = _week_matchups(conn, shown_week, season)
+    next_week = _next_week(conn)
+    upcoming = _upcoming(conn, next_week, season)
     rosters = _rosters(conn)
     moves = _recent_moves(conn)
     chat = _recent_chat(conn)
@@ -518,6 +584,7 @@ def render(conn: sqlite3.Connection) -> str:
       — not a prediction of the real games.</p>
     {_matchup_cards(games)}
   </section>
+{_upcoming_section(upcoming, next_week)}
 
   <section>
     <p class="eyebrow">Rosters</p>
