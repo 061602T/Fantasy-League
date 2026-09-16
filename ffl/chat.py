@@ -14,9 +14,11 @@ Everything is written to `chat_log` (event_type 'banter').
 """
 from __future__ import annotations
 
+import random as _random
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
-from . import llm
+from . import config, llm
 
 
 def _team(conn, tid):
@@ -46,6 +48,15 @@ def _roast_material(conn, exclude_id) -> str:
 def _post(conn, team_id, message):
     conn.execute("INSERT INTO chat_log(team_id, event_type, message) "
                  "VALUES(?, 'banter', ?)", (team_id, message))
+    conn.commit()
+
+
+def _post_at(conn, team_id, message, when):
+    """Post a banter line with an explicit created_at (UTC), for the ambient
+    loop's staggered timestamps."""
+    conn.execute("INSERT INTO chat_log(team_id, event_type, message, created_at) "
+                 "VALUES(?, 'banter', ?, ?)",
+                 (team_id, message, when.strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
 
 
@@ -167,3 +178,123 @@ def react_to_week(conn: sqlite3.Connection, week: int, **kw) -> list[dict]:
         return []
     headline, detail, involvement = summary
     return react_to_event(conn, headline, detail, involvement, **kw)
+
+
+# --- Ambient chat (the decoupled 15-min loop) ------------------------------
+
+# How likely each chattiness tier is to be picked as a conversation starter.
+_CHATTINESS_WEIGHT = {"trash-talker": 3.0, "moderate": 1.4, "quiet": 0.5}
+
+
+def last_banter_age(conn: sqlite3.Connection) -> float | None:
+    """Seconds since the most recent 'banter' post (UTC), or None if there is
+    none. Used to enforce a cooldown so the ambient loop doesn't pile onto the
+    hourly tick's chat or spam back-to-back firings."""
+    row = conn.execute(
+        "SELECT created_at FROM chat_log WHERE event_type='banter' "
+        "ORDER BY chat_id DESC LIMIT 1").fetchone()
+    if not row or not row["created_at"]:
+        return None
+    try:
+        dt = datetime.strptime(str(row["created_at"])[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    return max(0.0, (now - dt).total_seconds())
+
+
+def _wants_to_chat(team, recent) -> bool:
+    """Haiku gate for ambient chat (no event), weighted by chattiness."""
+    system = (f"You are {team['gm_name']}, a fantasy football GM whose chattiness "
+              f"is '{team['chattiness']}' (quiet = rarely posts, trash-talker = "
+              f"posts a lot). Answer only JSON.")
+    user = (f"It's a random moment in the league group chat. Recent chat:\n{recent}"
+            "\n\nDo you feel like posting something right now -- a reply, a jab, a "
+            "hot take, a random thought? Only if it fits your chattiness and "
+            'there\'s something worth saying. Return {"act": true or false}.')
+    return llm.gate(system, user)
+
+
+def _ambient_line(conn, team, recent, mode) -> str | None:
+    """Sonnet: one ambient group-chat line. mode 'reply' reacts to the recent
+    chat; 'fresh' opens a new topic."""
+    you_bio = f" About you: {team['bio']}" if team["bio"] else ""
+    system = (f"You are {team['gm_name']}, GM of \"{team['team_name']}\", in the "
+              f"league group chat. Persona: {team['personality']}{you_bio} "
+              f"Chattiness: {team['chattiness']}. Write ONE short line like a real "
+              f"person in a group chat -- no narration, no quotation marks."
+              + llm.VOICE)
+    if mode == "reply":
+        user = (f"The league group chat, most recent last:\n{recent}\n\n"
+                "Reply to what was just said. React to the SPECIFIC thing they "
+                "said -- fire back, pile on, or clown it -- so it reads as a real "
+                "back-and-forth, not a new topic. One line. "
+                'Return JSON {"message": "<your post>"}.')
+    else:
+        user = (f"The chat's been quiet. Recent chat (may be stale):\n{recent}\n\n"
+                f"The other GMs (fair game to poke):\n"
+                f"{_roast_material(conn, team['team_id'])}\n\n"
+                "Open something new -- a hot take, a brag, a shot at a rival, a "
+                "gripe about your own team, a random football thought. NOT a reply "
+                'to anything specific. One line. Return JSON {"message": "<post>"}.')
+    try:
+        msg = str(llm.chat_json(system, user, max_tokens=400).get("message", "")).strip()
+    except (ValueError, TypeError):
+        return None
+    return msg or None
+
+
+def ambient_exchange(conn: sqlite3.Connection, *, rng=None, use_gate: bool = True,
+                     now=None, max_replies: int = 2) -> list[dict]:
+    """Produce a short, threaded ambient exchange (0 to a few messages).
+
+    A starter GM (weighted by chattiness) is gated (Haiku); if they speak they
+    either reply to recent chat or open a fresh topic, then up to `max_replies`
+    other GMs may reply in turn -- each gated, each seeing the latest messages so
+    they reference what was just said. Every message gets its own timestamp,
+    staggered by seconds-to-minutes so it reads as it happened over time.
+    Returns the posted messages (each with a 'ts' datetime).
+    """
+    rng = rng or _random
+    now = now or datetime.now(timezone.utc)
+    teams = [dict(r) for r in conn.execute("SELECT * FROM teams")]
+    if not teams:
+        return []
+
+    starter = rng.choices(
+        teams,
+        weights=[_CHATTINESS_WEIGHT.get(t["chattiness"], 1.0) for t in teams],
+        k=1)[0]
+    recent = recent_chat(conn)
+    if use_gate and not _wants_to_chat(starter, recent):
+        return []
+
+    has_recent = recent != "(quiet so far)"
+    mode = "reply" if (has_recent and rng.random() < config.CHAT_TICK_THREAD_PROB) \
+        else "fresh"
+    msg = _ambient_line(conn, starter, recent, mode)
+    if not msg:
+        return []
+
+    posted = []
+    when = now
+    _post_at(conn, starter["team_id"], msg, when)
+    posted.append({"team_id": starter["team_id"], "gm_name": starter["gm_name"],
+                   "message": msg, "ts": when, "mode": mode})
+
+    n_replies = rng.choices([0, 1, 2], weights=[0.35, 0.45, 0.20], k=1)[0]
+    n_replies = min(n_replies, max_replies)
+    others = [t for t in teams if t["team_id"] != starter["team_id"]]
+    rng.shuffle(others)
+    for team in others[:n_replies]:
+        recent = recent_chat(conn)              # now includes the latest message
+        if use_gate and not _wants_to_chat(team, recent):
+            continue
+        reply = _ambient_line(conn, team, recent, "reply")
+        if not reply:
+            continue
+        when = when + timedelta(seconds=rng.randint(5, 150))
+        _post_at(conn, team["team_id"], reply, when)
+        posted.append({"team_id": team["team_id"], "gm_name": team["gm_name"],
+                       "message": reply, "ts": when, "mode": "reply"})
+    return posted

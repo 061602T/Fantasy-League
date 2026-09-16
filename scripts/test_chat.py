@@ -5,10 +5,13 @@ threading, and persistence can be checked deterministically.
 Run:  python -m scripts.test_chat
 """
 import sys, os
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ffl import db, chat
+
+_NOW = datetime(2026, 9, 15, 14, 30, 0, tzinfo=timezone.utc)
 
 
 def _seed(conn):
@@ -74,10 +77,117 @@ def test_no_matchup_is_noop():
     print("ok: react_to_week with no scored matchups is a no-op")
 
 
+# --- Ambient chat (the decoupled loop) -------------------------------------
+
+def _seed_ambient(conn):
+    for slot, chatty in [(1, "trash-talker"), (2, "moderate"), (3, "quiet")]:
+        conn.execute("""INSERT INTO teams(team_name, gm_name, draft_slot,
+                         personality, bio, chattiness) VALUES(?,?,?,?,?,?)""",
+                     (f"Team {slot}", f"GM {slot}", slot, "plays hard", "", chatty))
+    conn.commit()
+
+
+class _FakeRng:
+    """Deterministic rng for ambient_exchange: fixed starter, reply-count, mode,
+    and stagger, so the exchange is fully controlled."""
+    def __init__(self, n_replies=2, random_val=0.0, stagger=30):
+        self.n_replies, self.random_val, self.stagger = n_replies, random_val, stagger
+
+    def choices(self, population, weights=None, k=1):
+        # [0,1,2] reply-count list vs the team list.
+        if population and isinstance(population[0], int):
+            return [self.n_replies]
+        return [population[0]]
+
+    def random(self):
+        return self.random_val
+
+    def shuffle(self, x):
+        pass
+
+    def randint(self, a, b):
+        return self.stagger
+
+
+def test_ambient_gate_declines():
+    conn = db.init_db(":memory:")
+    _seed_ambient(conn)
+    chat.llm.gate = lambda system, user, **k: False       # nobody wants to talk
+    posted = chat.ambient_exchange(conn, rng=_FakeRng(), now=_NOW)
+    assert posted == []
+    assert conn.execute("SELECT COUNT(*) FROM chat_log").fetchone()[0] == 0
+    print("ok: ambient_exchange (gate declines -> no posts)")
+
+
+def test_ambient_threading_and_timestamps():
+    conn = db.init_db(":memory:")
+    _seed_ambient(conn)
+    # Pre-seed a message so the starter is in 'reply' mode and threads onto it.
+    conn.execute("INSERT INTO chat_log(team_id, event_type, message) "
+                 "VALUES(1,'banter','opening shot from earlier')")
+    conn.commit()
+
+    chat.llm.gate = lambda system, user, **k: True
+    prompts, n = [], {"i": 0}
+    def fake_compose(system, user, **k):
+        prompts.append(user)
+        n["i"] += 1
+        return {"message": f"line{n['i']}"}
+    chat.llm.chat_json = fake_compose
+
+    posted = chat.ambient_exchange(conn, rng=_FakeRng(n_replies=2, stagger=40),
+                                   now=_NOW)
+    # Starter + 2 replies = 3 messages.
+    assert len(posted) == 3, posted
+    assert [p["mode"] for p in posted] == ["reply", "reply", "reply"]
+    # Threading: a later composer saw an earlier message in its prompt.
+    assert any("line1" in p for p in prompts[1:]), "reply didn't see earlier message"
+    # Each message stored with its OWN staggered timestamp, strictly increasing.
+    ts = [r["created_at"] for r in conn.execute(
+        "SELECT created_at FROM chat_log WHERE event_type='banter' "
+        "AND message LIKE 'line%' ORDER BY chat_id")]
+    assert len(set(ts)) == 3 and ts == sorted(ts), ts
+    print("ok: ambient_exchange (threaded replies, staggered unique timestamps)")
+
+
+def test_ambient_fresh_topic_when_quiet():
+    conn = db.init_db(":memory:")
+    _seed_ambient(conn)
+    chat.llm.gate = lambda system, user, **k: True
+    seen = {}
+    def fake_compose(system, user, **k):
+        seen["user"] = user
+        return {"message": "fresh take"}
+    chat.llm.chat_json = fake_compose
+    # No prior chat -> starter must open a fresh topic (not a reply).
+    posted = chat.ambient_exchange(conn, rng=_FakeRng(n_replies=0), now=_NOW)
+    assert len(posted) == 1 and posted[0]["mode"] == "fresh"
+    assert "NOT a reply" in seen["user"], "fresh-topic prompt expected"
+    print("ok: ambient_exchange (opens a fresh topic when the chat is quiet)")
+
+
+def test_last_banter_age():
+    conn = db.init_db(":memory:")
+    _seed_ambient(conn)
+    assert chat.last_banter_age(conn) is None            # nothing yet
+    from datetime import datetime, timezone
+    old = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute("INSERT INTO chat_log(team_id, event_type, message, created_at) "
+                 "VALUES(1,'banter','just now',?)", (old,))
+    conn.commit()
+    age = chat.last_banter_age(conn)
+    assert age is not None and age < 5, age                # seconds old
+    print("ok: last_banter_age (None when empty, small age for a fresh post)")
+
+
 def main():
     test_week_summary()
     test_react_gating_and_threading()
     test_no_matchup_is_noop()
+    test_ambient_gate_declines()
+    test_ambient_threading_and_timestamps()
+    test_ambient_fresh_topic_when_quiet()
+    test_last_banter_age()
     print("\nALL OFFLINE CHAT TESTS PASSED")
     return 0
 

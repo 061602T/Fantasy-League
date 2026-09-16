@@ -53,6 +53,19 @@ PLAYOFF_TEAMS = 4
 MIDWEEK_TRADE_PROB = float(os.environ.get("FFL_MIDWEEK_TRADE_PROB", "0.08"))
 MIDWEEK_CHAT_PROB = float(os.environ.get("FFL_MIDWEEK_CHAT_PROB", "0.12"))
 
+# --- Ambient chat loop (scripts/run_chat_tick.py) --------------------------
+# A lightweight chat-only loop, decoupled from the hourly scoring tick, meant to
+# run every ~15 min so the group chat feels ongoing rather than tied to scoring.
+# A firing does nothing unless it clears BOTH a cooldown since the last banter
+# and a cheap probability pre-gate -- so most of the ~96 firings/day are free
+# (no API), with natural quiet stretches, and it can't pile onto the hourly
+# tick's own chat. CHAT_TICK_PROB is per-firing; CHAT_TICK_COOLDOWN is in
+# seconds; CHAT_TICK_THREAD_PROB is how often a starter replies to recent chat
+# (threaded) vs opening a fresh topic.
+CHAT_TICK_PROB = float(os.environ.get("FFL_CHAT_TICK_PROB", "0.4"))
+CHAT_TICK_COOLDOWN = int(os.environ.get("FFL_CHAT_TICK_COOLDOWN", "360"))
+CHAT_TICK_THREAD_PROB = float(os.environ.get("FFL_CHAT_TICK_THREAD_PROB", "0.65"))
+
 # --- Draft-day chatter -----------------------------------------------------
 # Per-pick probability that a notable pick draws live reactions from a few
 # rival GMs (a reach, a steal, or grabbing a position a rival also needs).
