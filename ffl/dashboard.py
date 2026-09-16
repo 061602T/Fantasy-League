@@ -2,8 +2,9 @@
 
 The tick loop regenerates this each run; a human opens it in a browser (or the
 Pi serves it). Pure rendering -- no API calls. Standings, the latest week's
-matchups, recent roster moves, and the group chat, in a scoreboard treatment
-that works in light and dark and down to phone width.
+matchups, every team's roster (starters flagged), recent moves, and the group
+chat, in a scoreboard treatment that works in light and dark and down to phone
+width.
 
 Path: FFL_DASHBOARD_PATH, default ~/ffl-data/dashboard.html.
 """
@@ -97,6 +98,41 @@ def _recent_chat(conn, limit=16):
                           for r in rows]))
 
 
+_POS_ORDER = {"QB": 0, "RB": 1, "WR": 2, "TE": 3, "K": 4, "DST": 5}
+
+
+def _rosters(conn):
+    """Each team's active roster, grouped by position, starters flagged from the
+    most recent week that has a set lineup."""
+    row = conn.execute("SELECT MAX(week) w FROM lineups").fetchone()
+    lw = row["w"] if row else None
+    starters = set()
+    if lw is not None:
+        starters = {(r["team_id"], r["player_id"]) for r in conn.execute(
+            "SELECT team_id, player_id FROM lineups WHERE week=? AND slot!='BENCH'",
+            (lw,))}
+
+    out = []
+    teams = conn.execute(
+        "SELECT team_id, team_name, gm_name, wins, losses, ties FROM teams "
+        "ORDER BY draft_slot").fetchall()
+    for t in teams:
+        players = conn.execute(
+            """SELECT p.player_id, p.name, p.position
+                 FROM rosters r JOIN players p ON p.player_id = r.player_id
+                WHERE r.team_id = ? AND r.dropped_week IS NULL""",
+            (t["team_id"],)).fetchall()
+        plist = [{"name": p["name"], "pos": p["position"],
+                  "starter": (t["team_id"], p["player_id"]) in starters}
+                 for p in players]
+        plist.sort(key=lambda x: (_POS_ORDER.get(x["pos"], 9),
+                                  not x["starter"], x["name"]))
+        out.append({"name": t["team_name"], "gm": t["gm_name"],
+                    "rec": f"{t['wins']}–{t['losses']}–{t['ties']}",
+                    "players": plist})
+    return out
+
+
 # --- HTML pieces -----------------------------------------------------------
 
 def _standings_rows(rows):
@@ -162,17 +198,58 @@ def _moves_list(moves):
     return "<ul class='moves'>" + "".join(items) + "</ul>"
 
 
+def _roster_cards(rosters):
+    if not rosters:
+        return "<p class='empty'>No rosters yet.</p>"
+    cards = []
+    for t in rosters:
+        lis = []
+        for p in t["players"]:
+            cls = "starter" if p["starter"] else "bench"
+            mark = "<span class='mark'>ST</span>" if p["starter"] else ""
+            lis.append(f"<li class='{cls}'><span class='pos'>{_esc(p['pos'])}</span>"
+                       f"<span class='pl'>{_esc(p['name'])}</span>{mark}</li>")
+        cards.append(
+            f"<div class='rteam card'><div class='rhead'>"
+            f"<span class='rname'>{_esc(t['name'])}</span>"
+            f"<span class='rgm'>{_esc(t['gm'])} · {t['rec']}</span></div>"
+            f"<ul class='rlist'>{''.join(lis)}</ul></div>")
+    return "<div class='rosters'>" + "".join(cards) + "</div>"
+
+
+def _hue(name: str) -> int:
+    h = 0
+    for ch in name:
+        h = (h * 31 + ord(ch)) % 360
+    return h
+
+
+def _initials(name: str) -> str:
+    parts = [p for p in name.split() if p]
+    if not parts:
+        return "?"
+    letters = parts[0][:1] + (parts[1][:1] if len(parts) > 1 else "")
+    return letters.upper()
+
+
 def _chat_feed(chat):
     if not chat:
         return "<p class='empty'>The league chat is quiet.</p>"
     items = []
     for c in chat:
+        who, msg = c["who"], c["msg"]
         kind = c["kind"] or ""
-        cls = {"banter": "banter", "trade_talk": "trade", "waiver": "sys",
-               "collision": "sys", "system": "sys", "draft": "sys"}.get(kind, "sys")
+        # System/event lines (no author) read as centred notes, not speech.
+        if who == "League" or kind in ("system", "waiver", "collision", "draft"):
+            items.append(f"<li class='sysmsg'><span class='line'>{_esc(msg)}</span></li>")
+            continue
+        tcls = " trade" if kind == "trade_talk" else ""
+        chip = (f"<span class='chip' style='background:hsl({_hue(who)} 45% 42%)'>"
+                f"{_esc(_initials(who))}</span>")
         items.append(
-            f"<li class='{cls}'><span class='who'>{_esc(c['who'])}</span>"
-            f"<span class='line'>{_esc(c['msg'])}</span></li>")
+            f"<li class='msg{tcls}'>{chip}<div class='body'>"
+            f"<span class='who'>{_esc(who)}</span>"
+            f"<span class='line'>{_esc(msg)}</span></div></li>")
     return "<ul class='chat'>" + "".join(items) + "</ul>"
 
 
@@ -244,13 +321,36 @@ thead th.l{text-align:left}
 .badge.waiver{background:var(--surface-2);color:var(--muted)}
 .mv{flex:1;font-size:14px}
 .st{font-weight:700}.st.ok{color:var(--win)}.st.no{color:var(--loss)}
-.chat{list-style:none;margin:0;padding:6px 0;max-height:520px;overflow-y:auto}
-.chat li{padding:8px 16px;border-bottom:1px solid var(--line)}
+/* Rosters */
+.rosters{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+.rteam{padding:0;overflow:hidden}
+.rhead{display:flex;justify-content:space-between;align-items:baseline;gap:8px;
+  padding:12px 16px;border-bottom:1px solid var(--line);background:var(--surface-2)}
+.rname{font-weight:600;font-family:"Oswald",sans-serif;letter-spacing:.3px}
+.rgm{font-size:12px;color:var(--muted)}
+.rlist{list-style:none;margin:0;padding:5px 0}
+.rlist li{display:flex;align-items:center;gap:10px;padding:5px 16px;font-size:13.5px}
+.rlist .pos{flex:0 0 34px;font-size:10px;font-weight:700;letter-spacing:.05em;
+  color:var(--muted);text-transform:uppercase}
+.rlist .pl{flex:1;min-width:0}
+.rlist li.bench .pl{color:var(--muted)}
+.rlist li.starter .pl{font-weight:600}
+.rlist .mark{font-size:9px;font-weight:700;color:var(--accent);
+  background:var(--accent-soft);padding:2px 5px;border-radius:4px;letter-spacing:.05em}
+/* Chat */
+.chat{list-style:none;margin:0;padding:4px 0;max-height:600px;overflow-y:auto}
+.chat li{border-bottom:1px solid var(--line)}
 .chat li:last-child{border-bottom:0}
-.chat .who{display:block;font-size:12px;font-weight:600;color:var(--accent)}
-.chat li.sys .who{color:var(--muted)}
-.chat li.trade .who{color:var(--gold)}
-.chat .line{font-size:14px}
+.msg{display:flex;gap:11px;align-items:flex-start;padding:11px 16px}
+.chip{flex:0 0 30px;width:30px;height:30px;border-radius:50%;color:#fff;
+  font-family:"Oswald",sans-serif;font-size:12px;font-weight:600;letter-spacing:.3px;
+  display:flex;align-items:center;justify-content:center}
+.msg .body{display:flex;flex-direction:column;gap:2px;min-width:0}
+.msg .who{font-size:12px;font-weight:600;color:var(--ink)}
+.msg.trade .who{color:var(--gold)}
+.msg .line{font-size:14px;line-height:1.45;overflow-wrap:anywhere}
+.sysmsg{padding:9px 16px;text-align:center}
+.sysmsg .line{font-size:12.5px;color:var(--muted);font-style:italic}
 .empty{color:var(--muted);padding:16px;margin:0}
 footer{margin-top:26px;color:var(--muted);font-size:12px;text-align:center}
 """
@@ -265,6 +365,7 @@ def render(conn: sqlite3.Connection) -> str:
 
     standings = _standings(conn)
     games = _week_matchups(conn, shown_week)
+    rosters = _rosters(conn)
     moves = _recent_moves(conn)
     chat = _recent_chat(conn)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -321,6 +422,11 @@ def render(conn: sqlite3.Connection) -> str:
   <section>
     <p class="eyebrow">{_esc(mlabel)}</p>
     {_matchup_cards(games)}
+  </section>
+
+  <section>
+    <p class="eyebrow">Rosters</p>
+    {_roster_cards(rosters)}
   </section>
 
   <div class="cols">
