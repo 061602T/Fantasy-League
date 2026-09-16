@@ -62,14 +62,20 @@ Return a JSON object with exactly these fields:
   "team_name":       the franchise name -- punchy, 1-4 words, no year/number.
   "gm_name":         the GM's name (a fictional person's full name).
   "personality":     1-2 vivid sentences on how they run their team.
-  "bio":             2-3 sentences of invented PERSONAL characteristics for this
-                     fictional character -- their day job, hometown, an
-                     embarrassing habit or two, a personal quirk, a delusion
-                     they hold, their reputation in the league. This is the
-                     roast material rivals will rib them about in group chat, so
-                     make it specific and funny. Invent freely; it is fiction.
-                     Do NOT build it around real protected traits (race,
-                     religion, sex, gender, orientation, disability).
+  "bio":             4-6 sentences of invented PERSONAL lore for this fictional
+                     character -- and make it MESSY. This is a raunchy roast
+                     league, so give them real flaws and baggage: a gambling
+                     problem, a couple of bitter divorces and a much-younger
+                     second (or third) wife, a mountain of debt, a petty crime
+                     or scandal, a substance they lean on too hard, a feud, a
+                     humiliating origin story, delusions of grandeur. Specific,
+                     dark, and funny beats generic and safe -- this is the
+                     ammunition rivals will roast them with in group chat.
+                     Invent freely; it is pure fiction, played for comedy.
+                     Limits: no real or identifiable people, nothing sexually
+                     explicit, and never build the character around real
+                     protected traits (race, religion, sex, gender,
+                     orientation, disability).
   "risk_tolerance":  one of "boom-bust", "balanced", "safe-floor".
   "valuation_bias":  a short quirk in how they value players,
                      e.g. "overvalues rookies" or "won't draft kickers early".
