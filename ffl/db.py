@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS teams (
     team_name      TEXT NOT NULL,
     gm_name        TEXT NOT NULL,
     personality    TEXT,                -- free-text persona summary
+    bio            TEXT,                -- invented personal traits/backstory,
+                                        -- the roast material GMs rib each other about
     risk_tolerance TEXT,                -- boom-bust | balanced | safe-floor
     valuation_bias TEXT,                -- e.g. "overvalues rookies"
     chattiness     TEXT,                -- quiet | moderate | trash-talker
@@ -163,9 +165,24 @@ def connect(path: str = None) -> sqlite3.Connection:
     return conn
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Additive, idempotent column migrations for DBs created before a change.
+
+    CREATE TABLE IF NOT EXISTS never alters an existing table, so a database
+    from an earlier schema keeps its old column set. Each entry here adds a
+    nullable column only if it's missing, so re-running is a no-op.
+    """
+    for table, column, decl in [("teams", "bio", "TEXT")]:
+        cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+    conn.commit()
+
+
 def init_db(path: str = None) -> sqlite3.Connection:
     """Create the schema (idempotent) and return an open connection."""
     conn = connect(path)
     conn.executescript(SCHEMA)
     conn.commit()
+    _migrate(conn)
     return conn

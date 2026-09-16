@@ -62,6 +62,14 @@ Return a JSON object with exactly these fields:
   "team_name":       the franchise name -- punchy, 1-4 words, no year/number.
   "gm_name":         the GM's name (a fictional person's full name).
   "personality":     1-2 vivid sentences on how they run their team.
+  "bio":             2-3 sentences of invented PERSONAL characteristics for this
+                     fictional character -- their day job, hometown, an
+                     embarrassing habit or two, a personal quirk, a delusion
+                     they hold, their reputation in the league. This is the
+                     roast material rivals will rib them about in group chat, so
+                     make it specific and funny. Invent freely; it is fiction.
+                     Do NOT build it around real protected traits (race,
+                     religion, sex, gender, orientation, disability).
   "risk_tolerance":  one of "boom-bust", "balanced", "safe-floor".
   "valuation_bias":  a short quirk in how they value players,
                      e.g. "overvalues rookies" or "won't draft kickers early".
@@ -118,6 +126,7 @@ def _normalize_persona(data: dict) -> dict:
         "team_name": team,
         "gm_name": gm,
         "personality": (data.get("personality") or "").strip(),
+        "bio": (data.get("bio") or "").strip(),
         "risk_tolerance": _coerce_enum(data.get("risk_tolerance"),
                                        RISK_TOLERANCES, "balanced"),
         "valuation_bias": (data.get("valuation_bias") or "").strip(),
@@ -279,13 +288,13 @@ def persist_teams(conn: sqlite3.Connection, personas: list[dict],
     ids = []
     for p, slot in zip(personas, draft_slots):
         cur = conn.execute(
-            """INSERT INTO teams(team_name, gm_name, personality, risk_tolerance,
-                 valuation_bias, chattiness, draft_slot, faab_budget,
-                 faab_remaining, persona_json)
-               VALUES(?,?,?,?,?,?,?,?,?,?)""",
-            (p["team_name"], p["gm_name"], p["personality"], p["risk_tolerance"],
-             p["valuation_bias"], p["chattiness"], slot, config.FAAB_BUDGET,
-             config.FAAB_BUDGET, json.dumps(p.get("_raw", p))),
+            """INSERT INTO teams(team_name, gm_name, personality, bio,
+                 risk_tolerance, valuation_bias, chattiness, draft_slot,
+                 faab_budget, faab_remaining, persona_json)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (p["team_name"], p["gm_name"], p["personality"], p.get("bio", ""),
+             p["risk_tolerance"], p["valuation_bias"], p["chattiness"], slot,
+             config.FAAB_BUDGET, config.FAAB_BUDGET, json.dumps(p.get("_raw", p))),
         )
         ids.append(cur.lastrowid)
     conn.commit()

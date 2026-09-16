@@ -33,6 +33,16 @@ def recent_chat(conn: sqlite3.Connection, limit: int = 10) -> str:
     return "\n".join(lines) if lines else "(quiet so far)"
 
 
+def _roast_material(conn, exclude_id) -> str:
+    """The other GMs and their invented personal quirks -- fair game to roast."""
+    rows = conn.execute(
+        "SELECT team_id, gm_name, team_name, bio FROM teams WHERE team_id != ?",
+        (exclude_id,)).fetchall()
+    lines = [f"- {r['gm_name']} ({r['team_name']}): {r['bio']}"
+             for r in rows if r["bio"]]
+    return "\n".join(lines) if lines else "(no notes on the other GMs)"
+
+
 def _post(conn, team_id, message):
     conn.execute("INSERT INTO chat_log(team_id, event_type, message) "
                  "VALUES(?, 'banter', ?)", (team_id, message))
@@ -54,16 +64,21 @@ def _wants_to_speak(team, headline, involvement, recent) -> bool:
 
 def _compose(conn, team, headline, detail, involvement, recent) -> str | None:
     """Sonnet: write one in-character group-chat line."""
+    you_bio = f" About you: {team['bio']}" if team["bio"] else ""
     system = (f"You are {team['gm_name']}, GM of \"{team['team_name']}\", in the "
-              f"league group chat. Persona: {team['personality']} Chattiness: "
-              f"{team['chattiness']}. Write like a real person in a group chat: "
-              f"1-2 sentences, in character, no narration or quotation marks."
+              f"league group chat. Persona: {team['personality']}{you_bio} "
+              f"Chattiness: {team['chattiness']}. Write like a real person in a "
+              f"group chat: 1-2 sentences, in character, no narration or "
+              f"quotation marks."
               + llm.VOICE)
     user = (f"What just happened: {headline}\n{detail}\n\n"
             f"Your angle: {involvement or 'not directly involved'}\n"
+            f"The other GMs (their quirks are fair game to roast):\n"
+            f"{_roast_material(conn, team['team_id'])}\n\n"
             f"Recent chat:\n{recent}\n\n"
-            "Post your reaction (gloat, trash-talk, make excuses, joke -- "
-            'whatever fits you). Return JSON {"message": "<your post>"}.')
+            "Post your reaction (gloat, trash-talk, roast someone, make "
+            'excuses, joke -- whatever fits you). Return JSON {"message": '
+            '"<your post>"}.')
     try:
         msg = str(llm.chat_json(system, user, max_tokens=500).get("message", "")).strip()
     except (ValueError, TypeError):
