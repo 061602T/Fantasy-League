@@ -214,9 +214,12 @@ def recompute_standings(conn: sqlite3.Connection) -> None:
     """
     agg = {r["team_id"]: {"w": 0, "l": 0, "t": 0, "pf": 0.0, "pa": 0.0}
            for r in conn.execute("SELECT team_id FROM teams")}
+    # Regular-season records only -- playoff weeks (> REGULAR_SEASON_WEEKS) are
+    # single-elimination and must not count toward W-L/PF standings.
     finals = conn.execute(
         """SELECT home_team_id, away_team_id, home_points, away_points,
-                  winner_team_id FROM matchups WHERE status='final'""")
+                  winner_team_id FROM matchups
+            WHERE status='final' AND week <= ?""", (config.REGULAR_SEASON_WEEKS,))
     for m in finals:
         h, a = m["home_team_id"], m["away_team_id"]
         hp, ap = m["home_points"] or 0.0, m["away_points"] or 0.0

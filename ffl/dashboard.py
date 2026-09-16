@@ -14,7 +14,7 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 
-from . import config
+from . import config, playoffs
 
 DEFAULT_PATH = os.path.join("~", "ffl-data", "dashboard.html")
 
@@ -200,6 +200,8 @@ h1,h2,.rank,.sscore,.scorebar b{font-family:"Oswald","IBM Plex Sans",sans-serif}
   text-transform:uppercase}
 .scorebar .meta{color:var(--muted);font-size:14px;display:flex;gap:14px;flex-wrap:wrap}
 .scorebar .meta b{color:var(--ink);font-weight:600}
+.champ{flex-basis:100%;margin-top:6px;font-family:"Oswald",sans-serif;
+  font-size:18px;font-weight:600;letter-spacing:.4px;color:var(--gold)}
 section{margin-top:26px}
 .eyebrow{font-size:12px;letter-spacing:.12em;text-transform:uppercase;
   color:var(--accent);font-weight:600;margin:0 0 10px}
@@ -268,6 +270,17 @@ def render(conn: sqlite3.Connection) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     wk_label = f"Week {week} final" if week else "Preseason"
 
+    champ_id = playoffs.champion(conn)
+    champ_html = ""
+    if champ_id is not None:
+        cn = conn.execute("SELECT team_name FROM teams WHERE team_id=?",
+                          (champ_id,)).fetchone()["team_name"]
+        champ_html = f'<div class="champ">\U0001f3c6 Champion: {_esc(cn)}</div>'
+
+    reg = config.REGULAR_SEASON_WEEKS
+    mlabel = (f"Playoffs — Week {shown_week}" if shown_week > reg
+              else f"Week {shown_week} matchups")
+
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -289,6 +302,7 @@ def render(conn: sqlite3.Connection) -> str:
       <span>Status <b>{_esc(status)}</b></span>
       <span>{len(standings)} teams</span>
     </div>
+    {champ_html}
   </div>
 
   <section>
@@ -305,7 +319,7 @@ def render(conn: sqlite3.Connection) -> str:
   </section>
 
   <section>
-    <p class="eyebrow">{_esc('Week ' + str(shown_week))} matchups</p>
+    <p class="eyebrow">{_esc(mlabel)}</p>
     {_matchup_cards(games)}
   </section>
 

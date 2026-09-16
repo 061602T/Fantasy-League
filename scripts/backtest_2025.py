@@ -13,7 +13,7 @@ import sys, os, tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ffl import backup, config, db, season, store, projections
+from ffl import backup, config, db, season, store, projections, playoffs, digest, dashboard
 from scripts.run_week import print_standings
 
 
@@ -51,8 +51,33 @@ def main():
         season.score_week(conn, wk, season=2025)
         scored += 1
 
-    print(f"Scored {scored} weeks of the 2025 season on the drafted rosters.")
+    print(f"Scored {scored} weeks of the 2025 regular season on the drafted rosters.")
     print_standings(conn)
+
+    # Playoffs: the drafted rosters play out a bracket on real 2025 weeks 15-16.
+    if playoffs.regular_season_complete(conn):
+        print("\n=== Playoffs ===")
+        res = playoffs.advance(conn, latest_completed=18, season_year=2025)
+        for e in res["events"]:
+            print(f"  - {e}")
+        for wk in (playoffs.week_of_round(1), playoffs.week_of_round(2)):
+            names = {r["team_id"]: r["team_name"]
+                     for r in conn.execute("SELECT team_id, team_name FROM teams")}
+            for m in conn.execute(
+                    """SELECT home_team_id, away_team_id, home_points, away_points,
+                              winner_team_id FROM matchups WHERE week=? AND status='final'""",
+                    (wk,)):
+                w = m["winner_team_id"]
+                tag = names.get(w, "?")
+                print(f"    wk{wk}: {names[m['home_team_id']]} {m['home_points']:.1f} "
+                      f"vs {m['away_points']:.1f} {names[m['away_team_id']]} "
+                      f"→ {tag}")
+
+    # Show the digest + dashboard this state would produce (no delivery).
+    d = digest.publish(conn, path="/tmp/ffl-backtest-digest.txt", do_deliver=False)
+    dash = dashboard.write(conn, path="/tmp/ffl-backtest-dashboard.html")
+    print("\n=== Digest ===\n" + d["text"])
+    print(f"\nDashboard written: {dash}")
     return 0
 
 

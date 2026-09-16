@@ -40,6 +40,19 @@ REGULAR_SEASON_WEEKS = 14
 # completes. Override with FFL_TICK_INTERVAL.
 TICK_INTERVAL_SECONDS = int(os.environ.get("FFL_TICK_INTERVAL", "3600"))
 
+# --- Playoffs --------------------------------------------------------------
+# Top PLAYOFF_TEAMS seeds (by regular-season standings) enter a single-
+# elimination bracket. 4 -> semifinals then final, in NFL weeks
+# REGULAR_SEASON_WEEKS+1 and +2. Playoff games don't count in regular records.
+PLAYOFF_TEAMS = 4
+
+# --- Mid-week activity between scored weeks --------------------------------
+# On an idle tick (no new NFL week), the league can still show some life. These
+# are per-idle-tick probabilities; kept low so hourly ticks stay cheap. The
+# Haiku gate still decides whether a chosen GM actually engages.
+MIDWEEK_TRADE_PROB = float(os.environ.get("FFL_MIDWEEK_TRADE_PROB", "0.08"))
+MIDWEEK_CHAT_PROB = float(os.environ.get("FFL_MIDWEEK_CHAT_PROB", "0.12"))
+
 # --- Full-PPR offensive scoring (reference; nflverse already applies this) --
 # Kept here for documentation and for any custom recompute/audit.
 PPR_SCORING = {

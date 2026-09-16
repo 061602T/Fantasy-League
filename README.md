@@ -116,7 +116,9 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       market.py       trades (negotiation) + FAAB waivers, with Haiku gates
       chat.py         event-aware group chat (Haiku gate + Sonnet banter)
       tick.py         one autonomous league step (score/waivers/chat/dashboard)
+      playoffs.py     single-elimination bracket (top seeds, weeks 15-16)
       dashboard.py    self-contained HTML check-in dashboard
+      digest.py       text notification digest + webhook/command delivery
       backup.py       online SQLite backup helper (cron + post-draft one-off)
     scripts/
       show_pool.py      print the current draft pool
@@ -133,6 +135,8 @@ All downloads are cached as parquet under `.cache/` (gitignored).
       test_chat.py      offline tests for the group chat
       run_tick.py       run the tick loop (one step, or --loop)
       test_tick.py      offline tests for the tick loop + dashboard
+      test_playoffs.py  offline tests for the playoff bracket
+      test_digest.py    offline tests for the notification digest
       backup_db.py      cron / on-demand DB backup CLI
       test_backup.py    offline tests for the backup helper
 
@@ -218,6 +222,22 @@ re-cloning) can never touch or orphan the live league.
 
 All 8 steps are built and verified against real data/API. The league runs
 itself: `run_tick` scores completed weeks, runs the market, posts chat, and
-refreshes the dashboard. Possible future work (not in the original brief):
-season playoffs/bracket, mid-week (not just post-week) market activity, and a
-push/email digest alongside the HTML dashboard.
+refreshes the dashboard.
+
+### Extensions (beyond the original brief)
+
+- **Playoffs** (`ffl/playoffs.py`): the top `PLAYOFF_TEAMS` seeds (default 4)
+  play a single-elimination bracket in NFL weeks after the regular season
+  (1 v 4, 2 v 3 → final); higher seed is home and advances on a tie; playoff
+  games don't count toward regular-season records. The tick drives the bracket
+  automatically; the dashboard shows a champion banner. Verified on the 2025
+  backtest (a real champion crowned from weeks 15-16).
+- **Mid-week market activity** (`ffl/tick.py` + `market.attempt_one_trade`): on
+  an otherwise idle tick, a small, probability-gated chance (`FFL_MIDWEEK_TRADE_PROB`
+  / `FFL_MIDWEEK_CHAT_PROB`) of a trade attempt or ambient chat, so the league
+  has life between games. The Haiku gate still decides who engages, keeping
+  hourly ticks cheap.
+- **Notification digest** (`ffl/digest.py`): a concise text digest written each
+  advancing tick to `FFL_DIGEST_PATH`, plus provider-agnostic delivery — set
+  `FFL_DIGEST_WEBHOOK` (POST) or `FFL_DIGEST_CMD` (stdin, e.g. `ntfy publish`,
+  `mail`) to route it to push/email without any third-party dependency.

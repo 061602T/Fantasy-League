@@ -34,6 +34,8 @@ def one_tick(conn, no_refresh, db_path):
         print(f"    - {e}")
     if result.get("dashboard"):
         print(f"    dashboard: {result['dashboard']}")
+    if result.get("digest"):
+        print(f"    digest:    {result['digest']}")
     return result
 
 

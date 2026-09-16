@@ -12,10 +12,11 @@ automatic -- if several weeks completed since the last run, it scores each.
 """
 from __future__ import annotations
 
+import random
 import sqlite3
 
-from . import (backup, config, dashboard, data, market, projections, season,
-               store)
+from . import (backup, config, dashboard, data, digest, market, playoffs,
+               projections, season, store)
 from . import chat as chatmod
 
 
@@ -24,11 +25,28 @@ def _current_scored_week(conn) -> int:
     return (row["current_week"] if row else 0) or 0
 
 
+def _live_proj_map() -> dict:
+    return {r.entity_id: r.proj_ppg
+            for r in projections.build_projections().itertuples(index=False)}
+
+
+def _midweek_chat(conn):
+    """A little ambient banter about the current standings (one round)."""
+    top = conn.execute(
+        "SELECT team_name, wins, losses FROM teams "
+        "ORDER BY wins DESC, points_for DESC LIMIT 1").fetchone()
+    detail = (f"{top['team_name']} sits on top at {top['wins']}-{top['losses']}."
+              if top else "")
+    return chatmod.react_to_event(conn, "Midweek league chatter", detail, rounds=1)
+
+
 def run_tick(conn: sqlite3.Connection, *, sync: bool = True, refresh: bool = True,
              latest_completed: int = None, do_market: bool = True,
              do_chat: bool = True, make_dashboard: bool = True,
              backup_after: bool = True, dash_path: str = None,
-             db_path: str = None, proj_map: dict = None) -> dict:
+             db_path: str = None, proj_map: dict = None,
+             do_playoffs: bool = True, do_midweek: bool = True,
+             make_digest: bool = True, rng=None) -> dict:
     """Run one tick. Returns a summary dict.
 
     Params exist mostly for testing: `sync`/`refresh` control real data access,
@@ -55,7 +73,9 @@ def run_tick(conn: sqlite3.Connection, *, sync: bool = True, refresh: bool = Tru
             conn, projections.build_game_logs(year, latest_completed))
 
     events, weeks_scored = [], []
-    for wk in range(current + 1, latest_completed + 1):
+    # Regular season only here; playoff weeks (> REGULAR_SEASON_WEEKS) are handled
+    # by the bracket below.
+    for wk in range(current + 1, min(latest_completed, config.REGULAR_SEASON_WEEKS) + 1):
         have = conn.execute(
             "SELECT COUNT(*) FROM player_weekly_scores WHERE season=? AND week=?",
             (year, wk)).fetchone()[0]
@@ -77,13 +97,48 @@ def run_tick(conn: sqlite3.Connection, *, sync: bool = True, refresh: bool = Tru
             if posts:
                 events.append(f"week {wk}: {len(posts)} chat posts")
 
+    # Playoffs: build/score the bracket once the regular season is complete.
+    playoff_events = []
+    if do_playoffs and playoffs.regular_season_complete(conn):
+        pr = playoffs.advance(conn, latest_completed, year, proj_map=proj_map)
+        playoff_events = pr["events"]
+        events.extend(playoff_events)
+
+    advanced = bool(weeks_scored) or bool(playoff_events)
+
+    # Mid-week 'life' between scored weeks -- probability-gated so idle hourly
+    # ticks stay cheap; the Haiku gate still decides who actually engages.
+    midweek = []
+    if not advanced and do_midweek:
+        r = rng or random
+        if do_market and r.random() < config.MIDWEEK_TRADE_PROB:
+            res = market.attempt_one_trade(conn, proj_map or _live_proj_map())
+            if res and res.get("status") == "accepted":
+                midweek.append("mid-week trade completed")
+        if do_chat and r.random() < config.MIDWEEK_CHAT_PROB:
+            if _midweek_chat(conn):
+                midweek.append("mid-week chatter")
+        events.extend(midweek)
+
     dash = dashboard.write(conn, dash_path) if make_dashboard else None
-    if weeks_scored and backup_after:
+
+    if advanced and backup_after:
         try:
             backup.backup_db(db_path=db_path or config.DB_PATH)
         except Exception as e:  # noqa: BLE001 -- never fail a tick on backup
             events.append(f"WARNING: backup failed: {e}")
 
-    return {"status": "advanced" if weeks_scored else "idle",
-            "weeks_scored": weeks_scored, "latest_completed": latest_completed,
-            "dashboard": dash, "events": events}
+    digest_path = None
+    trade_happened = any("trade" in m for m in midweek)
+    if make_digest and (advanced or trade_happened):
+        try:
+            digest_path = digest.publish(
+                conn, weeks_scored=weeks_scored, extra_events=events)["path"]
+        except Exception as e:  # noqa: BLE001
+            events.append(f"WARNING: digest failed: {e}")
+
+    status = "advanced" if advanced else ("midweek" if midweek else "idle")
+    return {"status": status, "weeks_scored": weeks_scored,
+            "latest_completed": latest_completed, "dashboard": dash,
+            "digest": digest_path, "champion": playoffs.champion(conn),
+            "events": events}

@@ -24,6 +24,7 @@ gaining side); trade talk and waiver results are written to `chat_log`.
 from __future__ import annotations
 
 import json
+import random
 import sqlite3
 
 from . import config, llm, rosters
@@ -309,6 +310,23 @@ def negotiate(conn, a_id, b_id, proj_map, initial=None) -> dict:
 
     _finish_txn(conn, txn_id, "rejected", current)  # ran out of rounds
     return {"status": "rejected", "offer": _clean(current), "rounds": MAX_TRADE_ROUNDS}
+
+
+def attempt_one_trade(conn, proj_map, rng=random, use_gate: bool = True) -> dict | None:
+    """Pick an interested GM and a random partner, and run one negotiation.
+
+    For mid-week 'life' between scored weeks. Tries a few GMs through the Haiku
+    gate; returns the negotiation result, or None if nobody wanted to deal.
+    """
+    teams = [r["team_id"] for r in conn.execute("SELECT team_id FROM teams")]
+    rng.shuffle(teams)
+    initiator = next((t for t in teams[:3]
+                      if not use_gate or wants_to_trade(conn, t, proj_map)), None)
+    if initiator is None:
+        return None
+    partners = [t for t in teams if t != initiator]
+    rng.shuffle(partners)
+    return negotiate(conn, initiator, partners[0], proj_map)
 
 
 def _clean(offer):
