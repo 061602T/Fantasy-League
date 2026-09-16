@@ -66,25 +66,55 @@ def _week_matchups(conn, week):
 
 
 def _recent_moves(conn, limit=8):
+    import json
     names = {r["team_id"]: r["team_name"]
              for r in conn.execute("SELECT team_id, team_name FROM teams")}
     rows = conn.execute(
-        """SELECT type, status, from_team_id, to_team_id, faab_bid, details_json,
-                  COALESCE(resolved_at, created_at) AS ts
-             FROM transactions
-            WHERE type IN ('trade','waiver_claim')
+        """SELECT type, status, from_team_id, to_team_id, faab_bid, details_json
+             FROM transactions WHERE type IN ('trade','waiver_claim')
             ORDER BY txn_id DESC LIMIT ?""", (limit,)).fetchall()
-    import json
-    out = []
+
+    parsed, pids = [], set()
     for r in rows:
         try:
             d = json.loads(r["details_json"]) if r["details_json"] else {}
         except ValueError:
             d = {}
-        out.append({"type": r["type"], "status": r["status"],
-                    "from": names.get(r["from_team_id"], ""),
-                    "to": names.get(r["to_team_id"], ""),
-                    "faab": r["faab_bid"], "detail": d})
+        parsed.append((r, d))
+        if r["type"] == "waiver_claim":
+            pids.update([d.get("add"), d.get("drop")])
+        else:
+            pids.update(d.get("a_gives", []) + d.get("b_gives", []))
+    pids = {p for p in pids if p}
+    pname = {}
+    if pids:
+        marks = ",".join("?" * len(pids))
+        pname = {x["player_id"]: x["name"] for x in conn.execute(
+            f"SELECT player_id, name FROM players WHERE player_id IN ({marks})",
+            list(pids))}
+
+    def nm(pid):
+        return pname.get(pid, pid or "?")
+
+    out = []
+    for r, d in parsed:
+        ok = r["status"] == "processed"
+        if r["type"] == "waiver_claim":
+            out.append({"kind": "waiver", "ok": ok,
+                        "team": names.get(r["to_team_id"], "?"),
+                        "add": nm(d.get("add")), "drop": nm(d.get("drop")),
+                        "faab": r["faab_bid"]})
+        else:
+            a = names.get(d.get("a"), names.get(r["from_team_id"], "?"))
+            b = names.get(d.get("b"), names.get(r["to_team_id"], "?"))
+            a_gets = [nm(x) for x in d.get("b_gives", [])]  # a receives b's players
+            b_gets = [nm(x) for x in d.get("a_gives", [])]
+            if d.get("b_faab"):
+                a_gets.append(f"${d['b_faab']} FAAB")
+            if d.get("a_faab"):
+                b_gets.append(f"${d['a_faab']} FAAB")
+            out.append({"kind": "trade", "ok": ok, "a": a, "b": b,
+                        "a_gets": a_gets, "b_gets": b_gets})
     return out
 
 
@@ -178,23 +208,40 @@ def _matchup_cards(games):
 def _moves_list(moves):
     if not moves:
         return "<p class='empty'>No trades or waiver claims yet.</p>"
+    none = "nothing"
     items = []
     for m in moves:
-        badge = "TRADE" if m["type"] == "trade" else "WAIVER"
-        bcl = "trade" if m["type"] == "trade" else "waiver"
-        ok = m["status"] in ("processed",)
-        st = "✓" if ok else "✗"
-        stcl = "ok" if ok else "no"
-        if m["type"] == "waiver_claim":
-            d = m["detail"]
-            text = (f"{_esc(m['to'])} — add/drop"
-                    + (f" for ${m['faab']}" if m["faab"] is not None else ""))
+        st = "✓" if m["ok"] else "✗"
+        stcl = "ok" if m["ok"] else "no"
+        if m["kind"] == "waiver":
+            badge = "<span class='badge waiver'>WAIVER</span>"
+            head = (f"<div class='mvhead'>{_esc(m['team'])}"
+                    f"<span class='st {stcl}'>{st}</span></div>")
+            faab = f"${m['faab']}" if m["faab"] is not None else ""
+            if m["ok"]:
+                body = head + (
+                    f"<div class='mvline'><span class='add'>&plus; "
+                    f"{_esc(m['add'])}</span>"
+                    f"<span class='drop'>&minus; {_esc(m['drop'])}</span>"
+                    f"<span class='fa'>{faab}</span></div>")
+            else:
+                body = head + (f"<div class='mvline muted'>missed on "
+                               f"{_esc(m['add'])} · {faab} bid</div>")
         else:
-            text = f"{_esc(m['from'])} ↔ {_esc(m['to'])}"
-        items.append(
-            f"<li><span class='badge {bcl}'>{badge}</span>"
-            f"<span class='mv'>{text}</span>"
-            f"<span class='st {stcl}'>{st}</span></li>")
+            badge = "<span class='badge trade'>TRADE</span>"
+            head = (f"<div class='mvhead'>{_esc(m['a'])} ⇄ {_esc(m['b'])}"
+                    f"<span class='st {stcl}'>{st}</span></div>")
+            if m["ok"]:
+                a_txt = ", ".join(m["a_gets"]) or none
+                b_txt = ", ".join(m["b_gets"]) or none
+                body = head + (
+                    f"<div class='mvline'><b>{_esc(m['a'])}</b> get "
+                    f"{_esc(a_txt)}</div>"
+                    f"<div class='mvline'><b>{_esc(m['b'])}</b> get "
+                    f"{_esc(b_txt)}</div>")
+            else:
+                body = head + "<div class='mvline muted'>talks fell through, no deal</div>"
+        items.append(f"<li>{badge}<div class='mv'>{body}</div></li>")
     return "<ul class='moves'>" + "".join(items) + "</ul>"
 
 
@@ -255,14 +302,14 @@ def _chat_feed(chat):
 
 _CSS = """
 :root{
-  --bg:#f3f6f2; --surface:#ffffff; --surface-2:#eef2ec; --ink:#15201a;
-  --muted:#5e6e63; --line:#e1e7de; --accent:#1c8347; --accent-soft:#e4f2ea;
-  --win:#1c8347; --loss:#bd4a30; --gold:#b9862a;
+  --bg:#e7d9bf; --surface:#f6efe1; --surface-2:#eee2cc; --ink:#33291b;
+  --muted:#8a7454; --line:#dbc9a6; --accent:#c96a1c; --accent-soft:#f3e0c8;
+  --win:#4f7a2e; --loss:#b8442b; --gold:#b07d18;
 }
 @media (prefers-color-scheme: dark){:root{
-  --bg:#0d120f; --surface:#151b16; --surface-2:#1d241e; --ink:#e7ede8;
-  --muted:#8ea093; --line:#27302a; --accent:#43c176; --accent-soft:#17281d;
-  --win:#43c176; --loss:#e0785f; --gold:#dfb14e;
+  --bg:#1c160e; --surface:#271f15; --surface-2:#312817; --ink:#f0e5d1;
+  --muted:#b3a081; --line:#3d3122; --accent:#e6883a; --accent-soft:#352817;
+  --win:#84b766; --loss:#e2805f; --gold:#d9b455;
 }}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
@@ -312,14 +359,21 @@ thead th.l{text-align:left}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:20px}
 @media (max-width:640px){.cols{grid-template-columns:1fr}}
 .moves{list-style:none;margin:0;padding:6px 0}
-.moves li{display:flex;align-items:center;gap:10px;padding:9px 16px;
+.moves li{display:flex;align-items:flex-start;gap:10px;padding:11px 16px;
   border-bottom:1px solid var(--line)}
 .moves li:last-child{border-bottom:0}
 .badge{font-size:10px;font-weight:700;letter-spacing:.06em;padding:3px 7px;
-  border-radius:5px;flex-shrink:0}
+  border-radius:5px;flex-shrink:0;margin-top:1px}
 .badge.trade{background:var(--accent-soft);color:var(--accent)}
 .badge.waiver{background:var(--surface-2);color:var(--muted)}
-.mv{flex:1;font-size:14px}
+.mv{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.mvhead{display:flex;justify-content:space-between;align-items:center;gap:8px;
+  font-size:14px;font-weight:600}
+.mvline{font-size:13px;overflow-wrap:anywhere}
+.mvline b{font-weight:600}
+.mvline .add{color:var(--win);font-weight:600;margin-right:9px}
+.mvline .drop{color:var(--loss);font-weight:600;margin-right:9px}
+.mvline .fa{color:var(--accent);font-weight:600}
 .st{font-weight:700}.st.ok{color:var(--win)}.st.no{color:var(--loss)}
 /* Rosters */
 .rosters{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
