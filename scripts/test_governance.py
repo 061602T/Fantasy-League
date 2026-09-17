@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ffl import config, db, effects, governance
+from ffl import config, db, effects, governance, market, tick
 
 _CHATTINESS = ["trash-talker", "moderate", "quiet", "moderate",
                "quiet", "moderate", "trash-talker", "quiet"]
@@ -207,6 +207,69 @@ def test_reject():
     print("ok: commissioner reject -> rejected_admin")
 
 
+# --- phase 1: tick wiring ---------------------------------------------------
+
+def test_tick_step_proposes_then_votes():
+    import random
+    conn = _seed()
+    _stub_propose(title="No Kickers Before Noon", pitch="A modest proposal.")
+    governance._wants_to_propose = lambda team: True
+    old = config.GOV_PROPOSE_PROB
+    config.GOV_PROPOSE_PROB = 1.0                 # force the pre-gate open
+    try:
+        ev1 = tick._governance_step(conn, random.Random(1))
+    finally:
+        config.GOV_PROPOSE_PROB = old
+    assert any("proposed" in e for e in ev1), ev1
+    assert len(governance.active_voting(conn)) == 1
+
+    # Next tick: a bylaw is open, so the step casts (a few) votes, never proposes.
+    _stub_votes({t: "yes" for t in range(2, 9)})
+    ev2 = tick._governance_step(conn, random.Random(2))
+    assert any("vote" in e for e in ev2), ev2
+    voted = len(governance._voted(conn, governance.active_voting(conn)[0]["bylaw_id"]))
+    assert voted <= 4, "per-tick vote trickle should be limited (proposer + <=3)"
+    print("ok: tick step proposes when idle, trickles votes when one is open")
+
+
+def test_tick_step_never_raises():
+    import random
+    conn = _seed()
+    governance.maybe_propose = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+    ev = tick._governance_step(conn, random.Random(0))   # must swallow the error
+    assert any("WARNING" in e for e in ev), ev
+    print("ok: tick governance step swallows errors (never crashes the tick)")
+
+
+# --- phase 2: enforcement hooks ---------------------------------------------
+
+def test_active_window_and_freeze_blocks_trades():
+    conn = _seed()
+    effects.apply_effect(conn, "trade_freeze", 1, {"weeks": 2})   # wk1 -> through 3
+    assert effects.active_team_ids(conn, "trade_freeze", 1) == {1}
+    assert effects.active_team_ids(conn, "trade_freeze", 3) == {1}
+    assert effects.active_team_ids(conn, "trade_freeze", 4) == set()   # expired
+    effects.apply_effect(conn, "loser_flag", 2, {"label": "clown"})
+    assert 2 in effects.active_team_ids(conn, "loser_flag", 99)        # NULL = always
+
+    # negotiate guards before any LLM call, so a frozen team on either side is a
+    # no-op with no API contact.
+    assert market.negotiate(conn, 1, 2, proj_map={})["status"] == "no_offer"
+    assert market.negotiate(conn, 2, 1, proj_map={})["status"] == "no_offer"
+    print("ok: active-effect window + trade_freeze blocks trades (both sides)")
+
+
+def test_waiver_backseat_ordering():
+    conn = _seed()
+    effects.apply_effect(conn, "waiver_backseat", 3, {"weeks": 1})    # active this week
+    key = market._waiver_priority_key(conn, week=1)
+    tie = sorted([{"team_id": 3, "faab": 10}, {"team_id": 2, "faab": 10}], key=key)
+    assert [c["team_id"] for c in tie] == [2, 3], "backseated team must lose the tie"
+    higher = sorted([{"team_id": 2, "faab": 10}, {"team_id": 3, "faab": 20}], key=key)
+    assert higher[0]["team_id"] == 3, "a higher bid still beats the penalty"
+    print("ok: waiver_backseat loses ties but not higher bids")
+
+
 def main():
     test_faab_bounds()
     test_duration_and_loser_bounds()
@@ -218,6 +281,10 @@ def main():
     test_enact_effect()
     test_enact_effect_out_of_bounds_refused()
     test_reject()
+    test_tick_step_proposes_then_votes()
+    test_tick_step_never_raises()
+    test_active_window_and_freeze_blocks_trades()
+    test_waiver_backseat_ordering()
     print("\nALL OFFLINE GOVERNANCE TESTS PASSED")
     return 0
 

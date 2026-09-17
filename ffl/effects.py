@@ -57,6 +57,18 @@ def team_id_by_name(conn, name: str):
     return row["team_id"] if row else None
 
 
+def active_team_ids(conn, effect_type: str, week: int) -> set:
+    """team_ids that currently have an active effect of this type. A duration
+    effect is active while its `active_through_week` is >= `week`; a NULL through
+    week means season-long / display (always active). Read side for the trade and
+    waiver enforcement hooks."""
+    rows = conn.execute(
+        "SELECT DISTINCT team_id FROM team_effects WHERE effect_type=? AND "
+        "(active_through_week IS NULL OR active_through_week >= ?)",
+        (effect_type, week)).fetchall()
+    return {r["team_id"] for r in rows}
+
+
 # --- effect: faab_adjust ----------------------------------------------------
 
 def _v_faab(conn, team_id, p):

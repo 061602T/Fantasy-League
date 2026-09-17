@@ -173,20 +173,24 @@ def _cast_vote(conn, bylaw, team) -> dict | None:
     return {"vote": vote, "message": effects.sanitize(data.get("message", ""), 200)}
 
 
-def cast_missing_votes(conn, bylaw_id, team_ids=None) -> list[dict]:
-    """Have every not-yet-voted team cast a vote in character. In live use a tick
-    would call this once per firing so votes trickle in over the window; here it
-    simply fills in everyone still outstanding. No-op unless the bylaw is open."""
+def cast_missing_votes(conn, bylaw_id, team_ids=None, *, limit=None,
+                       rng=None) -> list[dict]:
+    """Have not-yet-voted teams cast a vote in character. A tick calls this once
+    per firing (with a small `limit`) so votes trickle in over the window;
+    called with no limit it fills in everyone still outstanding. No-op unless the
+    bylaw is open."""
     b = conn.execute("SELECT * FROM bylaws WHERE bylaw_id=?", (bylaw_id,)).fetchone()
     if b is None or b["status"] != "voting":
         return []
     if team_ids is None:
         team_ids = [r["team_id"] for r in conn.execute("SELECT team_id FROM teams")]
     done = _voted(conn, bylaw_id)
+    remaining = [tid for tid in team_ids if tid not in done]
+    if limit is not None:
+        (rng or _random).shuffle(remaining)
+        remaining = remaining[:max(0, limit)]
     cast = []
-    for tid in team_ids:
-        if tid in done:
-            continue
+    for tid in remaining:
         team = _team(conn, tid)
         res = _cast_vote(conn, b, team)
         if not res:

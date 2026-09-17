@@ -15,8 +15,8 @@ from __future__ import annotations
 import random
 import sqlite3
 
-from . import (backup, config, dashboard, data, digest, ghpages, market,
-               playoffs, projections, season, store)
+from . import (backup, config, dashboard, data, digest, ghpages, governance,
+               market, playoffs, projections, season, store)
 from . import chat as chatmod
 
 
@@ -40,6 +40,33 @@ def _midweek_chat(conn):
     return chatmod.react_to_event(conn, "Midweek league chatter", detail, rounds=1)
 
 
+def _governance_step(conn, rng) -> list:
+    """Advance the free-form bylaw system by one tick: close any vote whose
+    window has elapsed, let a few more GMs weigh in on an open one, and -- rarely
+    -- let a GM propose a new bylaw. Cheap when idle (one SQL check, plus a ~5%
+    chance of a single Haiku propose-gate); LLM spend only while a bylaw is live.
+    Never raises -- governance must not crash a tick."""
+    out = []
+    try:
+        for c in governance.close_if_due(conn):
+            verdict = ("passed -- pending your approval"
+                       if c["status"] == "passed_pending" else "rejected by vote")
+            out.append(f"bylaw #{c['bylaw_id']} {verdict} ({c['reason']})")
+        openb = governance.active_voting(conn)
+        if openb:
+            cast = governance.cast_missing_votes(conn, openb[0]["bylaw_id"],
+                                                 limit=3, rng=rng)
+            if cast:
+                out.append(f"bylaw #{openb[0]['bylaw_id']}: {len(cast)} vote(s) cast")
+        else:
+            b = governance.maybe_propose(conn, rng=rng)
+            if b:
+                out.append(f'bylaw #{b["bylaw_id"]} proposed: "{b["title"]}"')
+    except Exception as e:  # noqa: BLE001 -- governance must never crash a tick
+        out.append(f"WARNING: governance step failed: {e}")
+    return out
+
+
 def run_tick(conn: sqlite3.Connection, *, sync: bool = True, refresh: bool = True,
              latest_completed: int = None, do_market: bool = True,
              do_chat: bool = True, make_dashboard: bool = True,
@@ -47,7 +74,7 @@ def run_tick(conn: sqlite3.Connection, *, sync: bool = True, refresh: bool = Tru
              db_path: str = None, proj_map: dict = None,
              do_playoffs: bool = True, do_midweek: bool = True,
              make_digest: bool = True, do_publish: bool = True,
-             rng=None) -> dict:
+             do_governance: bool = True, rng=None) -> dict:
     """Run one tick. Returns a summary dict.
 
     Params exist mostly for testing: `sync`/`refresh` control real data access,
@@ -122,6 +149,11 @@ def run_tick(conn: sqlite3.Connection, *, sync: bool = True, refresh: bool = Tru
                 midweek.append("mid-week chatter")
         events.extend(midweek)
 
+    # Governance runs every tick (busy or idle): close/vote/propose free-form
+    # bylaws. Cheap when nothing is live; never crashes the tick.
+    gov_events = _governance_step(conn, rng or random) if do_governance else []
+    events.extend(gov_events)
+
     dash = dashboard.write(conn, dash_path) if make_dashboard else None
 
     # Backups. Crowning a champion is a non-reproducible, high-value event, so
@@ -151,10 +183,12 @@ def run_tick(conn: sqlite3.Connection, *, sync: bool = True, refresh: bool = Tru
         except Exception as e:  # noqa: BLE001
             events.append(f"WARNING: digest failed: {e}")
 
-    # Publish the dashboard to GitHub Pages -- same trigger as the digest. A
-    # no-op unless FFL_GH_DASHBOARD_TOKEN/REPO are configured, and publish()
-    # never raises, so this can't crash the tick.
-    if do_publish and make_dashboard and dash and (advanced or trade_happened):
+    # Publish the dashboard to GitHub Pages when something changed. Governance
+    # activity (a proposal, votes, a closed bylaw) changes the Bylaws tab and the
+    # chat feed, so it triggers a publish too. A no-op unless
+    # FFL_GH_DASHBOARD_TOKEN/REPO are configured, and publish() never raises.
+    if do_publish and make_dashboard and dash and (
+            advanced or trade_happened or gov_events):
         pub = ghpages.publish(dash)
         if pub["status"] == "published":
             events.append("dashboard published to GitHub Pages")

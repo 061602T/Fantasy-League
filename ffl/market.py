@@ -27,7 +27,7 @@ import json
 import random
 import sqlite3
 
-from . import config, llm, rosters
+from . import config, effects, llm, rosters
 
 MAX_TRADE_ROUNDS = config.MAX_TRADE_ROUNDS
 
@@ -267,6 +267,11 @@ def negotiate(conn, a_id, b_id, proj_map, initial=None) -> dict:
 
     Returns {status, offer, rounds}. status in accepted/rejected/failed/no_offer.
     """
+    # Governance trade_freeze: a frozen team can't initiate or accept a trade.
+    frozen = effects.active_team_ids(conn, "trade_freeze", rosters.current_week(conn))
+    if a_id in frozen or b_id in frozen:
+        return {"status": "no_offer", "offer": None, "rounds": 0}
+
     offer = initial or propose_offer(conn, a_id, b_id, proj_map)
     if offer is None:
         return {"status": "no_offer", "offer": None, "rounds": 0}
@@ -321,6 +326,10 @@ def attempt_one_trade(conn, proj_map, rng=random, use_gate: bool = True) -> dict
     gate; returns the negotiation result, or None if nobody wanted to deal.
     """
     teams = [r["team_id"] for r in conn.execute("SELECT team_id FROM teams")]
+    # Governance trade_freeze: frozen teams are out of the trade market entirely
+    # (neither initiator nor partner) for the duration.
+    frozen = effects.active_team_ids(conn, "trade_freeze", rosters.current_week(conn))
+    teams = [t for t in teams if t not in frozen]
     rng.shuffle(teams)
     initiator = next((t for t in teams[:3]
                       if not use_gate or wants_to_trade(conn, t, proj_map)), None)
@@ -408,6 +417,21 @@ def decide_waiver(conn, team_id, fa_list, proj_map) -> dict | None:
             "message": str(data.get("message", "")).strip()}
 
 
+def _waiver_priority_key(conn, week):
+    """Sort key for resolving waiver claims. Lower sorts first (= higher
+    priority): highest bid wins; among equal bids a governance waiver_backseat
+    penalty drops that team behind everyone else; then most FAAB remaining; then
+    earliest draft slot. A backseated team with a strictly higher bid still
+    wins -- the penalty only bites on ties."""
+    meta = {r["team_id"]: r for r in conn.execute("SELECT * FROM teams")}
+    backseat = effects.active_team_ids(conn, "waiver_backseat", week)
+
+    def key(c):
+        return (-c["faab"], 1 if c["team_id"] in backseat else 0,
+                -meta[c["team_id"]]["faab_remaining"], meta[c["team_id"]]["draft_slot"])
+    return key
+
+
 def run_waivers(conn, week: int = None, team_ids=None, use_gate: bool = True,
                 proj_map: dict = None) -> list[dict]:
     """Collect one claim per interested team and resolve them by FAAB priority."""
@@ -428,10 +452,10 @@ def run_waivers(conn, week: int = None, team_ids=None, use_gate: bool = True,
         if claim:
             claims.append(claim)
 
-    # Priority: highest bid, then most FAAB remaining, then earliest draft slot.
-    meta = {r["team_id"]: r for r in conn.execute("SELECT * FROM teams")}
-    claims.sort(key=lambda c: (-c["faab"], -meta[c["team_id"]]["faab_remaining"],
-                               meta[c["team_id"]]["draft_slot"]))
+    # Priority: highest bid, then (governance) a waiver_backseat penalty that
+    # drops a team to the back of every tie, then most FAAB remaining, then
+    # earliest draft slot.
+    claims.sort(key=_waiver_priority_key(conn, week))
 
     taken, results = set(), []
     for c in claims:

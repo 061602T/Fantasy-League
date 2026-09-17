@@ -46,8 +46,8 @@ def test_tick_advances_then_idles():
         dash = os.path.join(tmp, "dash.html")
         # Week 1 is "complete"; skip real data + market/chat (API) for the test.
         r1 = tick.run_tick(conn, sync=False, refresh=False, latest_completed=1,
-                           do_market=False, do_chat=False, backup_after=False,
-                           dash_path=dash, proj_map=proj)
+                           do_market=False, do_chat=False, do_governance=False,
+                           backup_after=False, dash_path=dash, proj_map=proj)
         assert r1["status"] == "advanced" and r1["weeks_scored"] == [1], r1
         assert os.path.exists(dash)
 
@@ -58,8 +58,8 @@ def test_tick_advances_then_idles():
 
         # A second tick with nothing new is idle and doesn't double-score.
         r2 = tick.run_tick(conn, sync=False, refresh=False, latest_completed=1,
-                           do_market=False, do_chat=False, backup_after=False,
-                           dash_path=dash, proj_map=proj)
+                           do_market=False, do_chat=False, do_governance=False,
+                           backup_after=False, dash_path=dash, proj_map=proj)
         assert r2["status"] == "idle" and r2["weeks_scored"] == [], r2
         s2 = season.standings(conn)
         assert s == s2, "idle tick changed standings"
@@ -78,7 +78,7 @@ def test_dashboard_has_content():
     _seed(conn)
     season.build_schedule(conn)
     html = dashboard.render(conn)
-    assert "<title>AI Fantasy League</title>" in html
+    assert "<title>AI Fantasy Football League</title>" in html
     assert "Standings" in html and "Team 1" in html
     assert "prefers-color-scheme: dark" in html  # both themes defined
     assert html.strip().endswith("</html>")
@@ -101,8 +101,8 @@ def test_championship_backup():
 
         common = dict(sync=False, refresh=False, latest_completed=16,
                       do_market=False, do_chat=False, do_midweek=False,
-                      make_dashboard=False, make_digest=False, db_path=dbp,
-                      proj_map=proj)
+                      do_governance=False, make_dashboard=False,
+                      make_digest=False, db_path=dbp, proj_map=proj)
         os.environ["FFL_BACKUP_DIR"] = bdir
         try:
             r1 = tick.run_tick(conn, **common)   # crowns the champion
