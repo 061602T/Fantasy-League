@@ -65,6 +65,12 @@ MIDWEEK_CHAT_PROB = float(os.environ.get("FFL_MIDWEEK_CHAT_PROB", "0.12"))
 CHAT_TICK_PROB = float(os.environ.get("FFL_CHAT_TICK_PROB", "0.4"))
 CHAT_TICK_COOLDOWN = int(os.environ.get("FFL_CHAT_TICK_COOLDOWN", "360"))
 CHAT_TICK_THREAD_PROB = float(os.environ.get("FFL_CHAT_TICK_THREAD_PROB", "0.65"))
+# The 15-min loop also carries the GMs' between-game DECISIONS (trades and
+# governance), not just chat. Governance runs every firing (self-gated, cheap).
+# A trade negotiation is heavier (several LLM calls), so it's rarer: this is the
+# per-firing chance the loop attempts one. Kept low because the loop fires often
+# (every 15 min); tune for how busy you want the trade market to feel.
+CHAT_TICK_TRADE_PROB = float(os.environ.get("FFL_CHAT_TICK_TRADE_PROB", "0.05"))
 
 # --- Real-world context for chat (scripts/refresh_context.py) --------------
 # A separate, infrequent job (cron'd ~every 4h) web-searches current NFL news

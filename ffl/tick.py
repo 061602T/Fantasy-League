@@ -40,33 +40,6 @@ def _midweek_chat(conn):
     return chatmod.react_to_event(conn, "Midweek league chatter", detail, rounds=1)
 
 
-def _governance_step(conn, rng) -> list:
-    """Advance the free-form bylaw system by one tick: close any vote whose
-    window has elapsed, let a few more GMs weigh in on an open one, and -- rarely
-    -- let a GM propose a new bylaw. Cheap when idle (one SQL check, plus a ~5%
-    chance of a single Haiku propose-gate); LLM spend only while a bylaw is live.
-    Never raises -- governance must not crash a tick."""
-    out = []
-    try:
-        for c in governance.close_if_due(conn):
-            verdict = ("passed -- pending your approval"
-                       if c["status"] == "passed_pending" else "rejected by vote")
-            out.append(f"bylaw #{c['bylaw_id']} {verdict} ({c['reason']})")
-        openb = governance.active_voting(conn)
-        if openb:
-            cast = governance.cast_missing_votes(conn, openb[0]["bylaw_id"],
-                                                 limit=3, rng=rng)
-            if cast:
-                out.append(f"bylaw #{openb[0]['bylaw_id']}: {len(cast)} vote(s) cast")
-        else:
-            b = governance.maybe_propose(conn, rng=rng)
-            if b:
-                out.append(f'bylaw #{b["bylaw_id"]} proposed: "{b["title"]}"')
-    except Exception as e:  # noqa: BLE001 -- governance must never crash a tick
-        out.append(f"WARNING: governance step failed: {e}")
-    return out
-
-
 def run_tick(conn: sqlite3.Connection, *, sync: bool = True, refresh: bool = True,
              latest_completed: int = None, do_market: bool = True,
              do_chat: bool = True, make_dashboard: bool = True,
@@ -149,9 +122,10 @@ def run_tick(conn: sqlite3.Connection, *, sync: bool = True, refresh: bool = Tru
                 midweek.append("mid-week chatter")
         events.extend(midweek)
 
-    # Governance runs every tick (busy or idle): close/vote/propose free-form
-    # bylaws. Cheap when nothing is live; never crashes the tick.
-    gov_events = _governance_step(conn, rng or random) if do_governance else []
+    # Governance can also advance here (busy or idle). In the deployed setup the
+    # 15-minute chat loop drives it; running it here too is safe (idempotent
+    # close, one-bylaw-at-a-time lock) and covers a manual/scheduled run_tick.
+    gov_events = governance.step(conn, rng=rng or random) if do_governance else []
     events.extend(gov_events)
 
     dash = dashboard.write(conn, dash_path) if make_dashboard else None

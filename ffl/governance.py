@@ -247,6 +247,33 @@ def close_if_due(conn, *, now=None) -> list[dict]:
     return out
 
 
+def step(conn, *, rng=None) -> list:
+    """One tick of the bylaw system, for whichever loop drives it: close any vote
+    whose window elapsed, trickle a few votes onto an open one, else (rarely) let
+    a GM propose. Cheap when idle -- one SQL check plus, on the ~GOV_PROPOSE_PROB
+    of firings with nothing open, a single propose-gate. Never raises: governance
+    must not crash the loop it runs in. Returns human-readable event strings."""
+    rng = rng or _random
+    out = []
+    try:
+        for c in close_if_due(conn):
+            verdict = ("passed -- pending your approval"
+                       if c["status"] == "passed_pending" else "rejected by vote")
+            out.append(f"bylaw #{c['bylaw_id']} {verdict} ({c['reason']})")
+        openb = active_voting(conn)
+        if openb:
+            cast = cast_missing_votes(conn, openb[0]["bylaw_id"], limit=3, rng=rng)
+            if cast:
+                out.append(f"bylaw #{openb[0]['bylaw_id']}: {len(cast)} vote(s) cast")
+        else:
+            b = maybe_propose(conn, rng=rng)
+            if b:
+                out.append(f'bylaw #{b["bylaw_id"]} proposed: "{b["title"]}"')
+    except Exception as e:  # noqa: BLE001 -- must never crash the driving loop
+        out.append(f"WARNING: governance step failed: {e}")
+    return out
+
+
 # --- enactment (backs scripts/review_bylaws.py) -----------------------------
 
 def list_bylaws(conn, statuses=None) -> list[dict]:

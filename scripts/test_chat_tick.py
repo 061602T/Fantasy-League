@@ -29,9 +29,15 @@ def _league_db():
     return p
 
 
-def _run(argv, exchange_result):
+def _run(argv, exchange_result, *, gov=None, trade_prob=0.0):
+    """Drive run_chat_tick with the LLM-touching steps stubbed. By default the
+    governance step returns nothing and the trade probability is 0, so these
+    tests isolate the chat + publish wiring; pass `gov` to simulate a bylaw
+    event."""
     calls = {"wrote": 0, "published": 0}
     rct.chatmod.ambient_exchange = lambda conn: exchange_result
+    rct.governance.step = lambda conn, **k: list(gov or [])
+    rct.config.CHAT_TICK_TRADE_PROB = trade_prob   # 0 => never attempt a trade
     rct.dashboard.write = lambda conn: (calls.__setitem__("wrote", calls["wrote"] + 1)
                                         or "/tmp/x.html")
     rct.ghpages.publish = lambda path: (calls.__setitem__("published", calls["published"] + 1)
@@ -63,10 +69,19 @@ def test_no_publish_flag():
     print("ok: --no-publish skips the dashboard refresh even after posting")
 
 
+def test_publishes_on_governance_event():
+    # Nothing posted in chat, but a bylaw moved -> the loop still publishes.
+    calls = _run(["--db", _league_db(), "--force"], [],
+                 gov=['bylaw #1 proposed: "Tax the Hoarder"'])
+    assert calls["wrote"] == 1 and calls["published"] == 1, calls
+    print("ok: a governance event alone triggers a dashboard publish")
+
+
 def main():
     test_publishes_when_posted()
     test_no_publish_when_quiet()
     test_no_publish_flag()
+    test_publishes_on_governance_event()
     print("\nALL OFFLINE CHAT-TICK TESTS PASSED")
     return 0
 

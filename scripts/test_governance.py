@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ffl import config, db, effects, governance, market, tick
+from ffl import config, db, effects, governance, market
 
 _CHATTINESS = ["trash-talker", "moderate", "quiet", "moderate",
                "quiet", "moderate", "trash-talker", "quiet"]
@@ -217,7 +217,7 @@ def test_tick_step_proposes_then_votes():
     old = config.GOV_PROPOSE_PROB
     config.GOV_PROPOSE_PROB = 1.0                 # force the pre-gate open
     try:
-        ev1 = tick._governance_step(conn, random.Random(1))
+        ev1 = governance.step(conn, rng=random.Random(1))
     finally:
         config.GOV_PROPOSE_PROB = old
     assert any("proposed" in e for e in ev1), ev1
@@ -225,7 +225,7 @@ def test_tick_step_proposes_then_votes():
 
     # Next tick: a bylaw is open, so the step casts (a few) votes, never proposes.
     _stub_votes({t: "yes" for t in range(2, 9)})
-    ev2 = tick._governance_step(conn, random.Random(2))
+    ev2 = governance.step(conn, rng=random.Random(2))
     assert any("vote" in e for e in ev2), ev2
     voted = len(governance._voted(conn, governance.active_voting(conn)[0]["bylaw_id"]))
     assert voted <= 4, "per-tick vote trickle should be limited (proposer + <=3)"
@@ -236,9 +236,9 @@ def test_tick_step_never_raises():
     import random
     conn = _seed()
     governance.maybe_propose = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
-    ev = tick._governance_step(conn, random.Random(0))   # must swallow the error
+    ev = governance.step(conn, rng=random.Random(0))   # must swallow the error
     assert any("WARNING" in e for e in ev), ev
-    print("ok: tick governance step swallows errors (never crashes the tick)")
+    print("ok: governance step swallows errors (never crashes the driving loop)")
 
 
 # --- phase 2: enforcement hooks ---------------------------------------------
