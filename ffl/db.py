@@ -205,6 +205,11 @@ def connect(path: str = None) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL;")
     conn.execute("PRAGMA synchronous = FULL;")
     conn.execute("PRAGMA foreign_keys = ON;")
+    # Several scheduled jobs share this one file (the 15-min decision loop, the
+    # hourly mechanics tick, periodic backups). WAL already allows a reader
+    # during a write; this makes a would-be second writer wait up to 5s for the
+    # lock instead of failing immediately with "database is locked".
+    conn.execute("PRAGMA busy_timeout = 5000;")
     _migrate(conn)
     return conn
 
