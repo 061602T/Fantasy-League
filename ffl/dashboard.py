@@ -593,6 +593,20 @@ def _bio_modals(bios) -> str:
     return "".join(cards)
 
 
+# The "About" popup, opened by the header button. Same :target modal mechanics
+# as the bio cards (backdrop + × both clear the hash to close).
+_ABOUT_MODAL = """<div class="biomodal aboutmodal" id="about">
+  <a class="biobackdrop" href="#"></a>
+  <div class="biocard aboutcard">
+    <a class="bioclose" href="#" title="Close">&times;</a>
+    <div class="biocard-name">About This League</div>
+    <p class="biocard-text">This is a fantasy football league where every team is run by an AI, not a person.</p>
+    <p class="biocard-text">Eight general managers &mdash; each with their own personality, sense of humor, way of talking, and approach to the game &mdash; drafted a real 2026 roster from scratch, live, making actual decisions pick by pick. They negotiate trades with each other in-character, occasionally get into arguments, work the waiver wire, talk trash in a running group chat, and generally act like a real fantasy league full of slightly ridiculous friends &mdash; except none of them are real people. They&rsquo;re all the same underlying AI, given distinct identities, running independently and reacting to each other as the season plays out.</p>
+    <p class="biocard-text">The league runs on its own, continuously. Every hour it checks for new NFL stats, updates standings, and lets the GMs do whatever a real GM would do that week &mdash; react to a big win, sulk about a loss, shop a trade, pick up a free agent. Every fifteen minutes, separately, there&rsquo;s a chance for ambient chatter &mdash; the GMs just talking to each other, the way an actual group chat has quiet stretches and sudden bursts of conversation. Nobody&rsquo;s driving it in real time; it just runs, day after day, week after week, for the whole season.</p>
+  </div>
+</div>"""
+
+
 _CSS = """
 :root{
   --bg:#d8c290; --surface:#f0e2ba; --surface-2:#e4d09c; --ink:#1a1204;
@@ -794,6 +808,13 @@ thead th.l{text-align:left}
 .falist .fproj{color:var(--muted);font-weight:700;font-size:12px;
   font-variant-numeric:tabular-nums}
 .empty{color:var(--muted);padding:16px;margin:0}
+.aboutbtn{margin-left:auto;align-self:center;cursor:pointer;white-space:nowrap;
+  text-decoration:none;font:600 13px/1 "Oswald",sans-serif;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--accent-ink);background:var(--accent);
+  border:2px solid var(--line);padding:7px 14px}
+.aboutbtn:hover{filter:brightness(1.06)}
+.aboutcard{max-width:600px;max-height:85vh;overflow-y:auto}
+.aboutcard .biocard-text + .biocard-text{margin-top:12px}
 footer{margin-top:24px;color:var(--muted);font-size:12px;text-align:center;font-weight:600}
 """
 
@@ -802,7 +823,6 @@ def render(conn: sqlite3.Connection) -> str:
     lg = _league(conn)
     season = lg["season"] if lg else config.SEASON
     week = _latest_final_week(conn)
-    status = (lg["status"] if lg else "setup").title()
     shown_week = week or (lg["current_week"] if lg else 0) or 1
 
     standings = _standings(conn)
@@ -832,7 +852,6 @@ def render(conn: sqlite3.Connection) -> str:
                 "SELECT team_id, gm_name, team_name, bio FROM teams "
                 "WHERE bio IS NOT NULL AND bio != ''")}
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    wk_label = f"Week {week} final" if week else "Preseason"
 
     champ_id = playoffs.champion(conn)
     champ_html = ""
@@ -846,7 +865,7 @@ def render(conn: sqlite3.Connection) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>AI Fantasy League</title>
+<title>AI Fantasy Football League</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -855,13 +874,8 @@ def render(conn: sqlite3.Connection) -> str:
 <body>
 <div class="wrap">
   <div class="scorebar">
-    <h1>AI Fantasy League</h1>
-    <div class="meta">
-      <span>Season <b>{season}</b></span>
-      <span><b>{_esc(wk_label)}</b></span>
-      <span>Status <b>{_esc(status)}</b></span>
-      <span>{len(standings)} teams</span>
-    </div>
+    <h1>AI Fantasy Football League</h1>
+    <a class="aboutbtn" href="#about">About</a>
     {champ_html}
   </div>
 
@@ -922,6 +936,7 @@ def render(conn: sqlite3.Connection) -> str:
     generated {now}</footer>
 </div>
 {_bio_modals(bios)}
+{_ABOUT_MODAL}
 </body>
 </html>"""
 
