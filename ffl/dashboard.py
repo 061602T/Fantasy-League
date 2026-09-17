@@ -171,7 +171,7 @@ def _recent_chat(conn, limit=24):
     # above its parent -- the quoted preview keeps it readable either way.
     rows = conn.execute(
         """SELECT c.chat_id, c.event_type, c.message, c.created_at, c.reply_to,
-                  t.gm_name
+                  c.team_id, t.gm_name
              FROM chat_log c LEFT JOIN teams t ON t.team_id = c.team_id
             ORDER BY c.chat_id DESC LIMIT ?""", (limit,)).fetchall()
     # Look up the parent of any reply (it may be older than the shown window),
@@ -187,7 +187,7 @@ def _recent_chat(conn, limit=24):
             parents[p["chat_id"]] = {"who": p["gm_name"] or "League",
                                      "msg": p["message"]}
     return [{"who": r["gm_name"] or "League", "kind": r["event_type"],
-             "msg": r["message"], "ts": r["created_at"],
+             "msg": r["message"], "ts": r["created_at"], "team_id": r["team_id"],
              "parent": parents.get(r["reply_to"]) if r["reply_to"] else None}
             for r in rows]
 
@@ -356,6 +356,26 @@ def _matchup_cards(games):
     return "<div class='games'>" + "".join(cards) + "</div>"
 
 
+def _weeks_region(conn, season_year, reg) -> str:
+    """A section per completed week, newest week first (chronological, down),
+    each showing that week's matchups with projected vs actual."""
+    weeks = [r["week"] for r in conn.execute(
+        "SELECT DISTINCT week FROM matchups WHERE status='final' ORDER BY week DESC")]
+    if not weeks:
+        return ""
+    note = (f'<p class="mnote">“proj” is a recent-form statistical estimate of a '
+            f'team’s total (last {config.SCORE_PROJ_WINDOW} games, bye-adjusted) '
+            f'shown beside the actual score — not a prediction.</p>')
+    out = []
+    for i, wk in enumerate(weeks):
+        label = f"Playoffs — Week {wk}" if wk > reg else f"Week {wk}"
+        games = _week_matchups(conn, wk, season_year)
+        out.append(f'  <section>\n    <p class="eyebrow">{_esc(label)}</p>\n'
+                   f'    {note if i == 0 else ""}\n'
+                   f'    {_matchup_cards(games)}\n  </section>')
+    return "\n".join(out)
+
+
 def _trades_list(trades):
     if not trades:
         return "<p class='empty'>No trades yet.</p>"
@@ -425,16 +445,12 @@ def _roster_cards(rosters):
             mark = "<span class='mark'>ST</span>" if p["starter"] else ""
             lis.append(f"<li class='{cls}'><span class='pos'>{_esc(p['pos'])}</span>"
                        f"<span class='pl'>{_esc(p['name'])}</span>{mark}</li>")
-        bio = ""
-        if t["bio"]:
-            bio = (f"<details class='biobox'><summary>Bio &amp; baggage</summary>"
-                   f"<p class='bio'>{_esc(t['bio'])}</p></details>")
+        # Each roster is collapsible and starts collapsed (no `open` attribute).
         cards.append(
-            f"<div class='rteam card'><div class='rhead'>"
+            f"<details class='rteam card'><summary class='rhead'>"
             f"<span class='rname'>{_esc(t['name'])}</span>"
-            f"<span class='rgm'>{_esc(t['gm'])} · {t['rec']}</span></div>"
-            f"{bio}"
-            f"<ul class='rlist'>{''.join(lis)}</ul></div>")
+            f"<span class='rgm'>{_esc(t['gm'])} · {t['rec']}</span></summary>"
+            f"<ul class='rlist'>{''.join(lis)}</ul></details>")
     return "<div class='rosters'>" + "".join(cards) + "</div>"
 
 
@@ -453,9 +469,10 @@ def _initials(name: str) -> str:
     return letters.upper()
 
 
-def _chat_feed(chat):
+def _chat_feed(chat, bios=None):
     if not chat:
         return "<p class='empty'>The league chat is quiet.</p>"
+    bios = bios or {}
     items = []
     for c in chat:
         who, msg = c["who"], c["msg"]
@@ -470,6 +487,13 @@ def _chat_feed(chat):
         tcls = " trade" if kind == "trade_talk" else ""
         chip = (f"<span class='chip' style='background:hsl({_hue(who)} 72% 40%)'>"
                 f"{_esc(_initials(who))}</span>")
+        # The name links to that GM's bio card when they have one.
+        tid = c.get("team_id")
+        if tid in bios:
+            name = (f"<a class='who namelink' href='#bio-{tid}' "
+                    f"title='View bio'>{_esc(who)}</a>")
+        else:
+            name = f"<span class='who'>{_esc(who)}</span>"
         quote = ""
         p = c.get("parent")
         if p:
@@ -480,11 +504,27 @@ def _chat_feed(chat):
                      f"<span class='qmsg'>{_esc(snip)}</span></div>")
         items.append(
             f"<li class='msg{tcls}'>{chip}<div class='bubble'>"
-            f"<div class='byline'><span class='who'>{_esc(who)}</span>"
-            f"<span class='ts'>{ts}</span></div>"
+            f"<div class='byline'>{name}<span class='ts'>{ts}</span></div>"
             f"{quote}"
             f"<span class='line'>{_esc(msg)}</span></div></li>")
     return "<ul class='chat'>" + "".join(items) + "</ul>"
+
+
+def _bio_modals(bios) -> str:
+    """Hidden bio cards, one per GM with a bio, revealed via :target when a chat
+    name is clicked. A backdrop link and a × close both clear the hash."""
+    cards = []
+    for tid, b in bios.items():
+        cards.append(
+            f"<div class='biomodal' id='bio-{tid}'>"
+            f"<a class='biobackdrop' href='#'></a>"
+            f"<div class='biocard'>"
+            f"<a class='bioclose' href='#' title='Close'>&times;</a>"
+            f"<div class='biocard-name'>{_esc(b['gm'])}</div>"
+            f"<div class='biocard-team'>{_esc(b['team'])}</div>"
+            f"<p class='biocard-text'>{_esc(b['bio'])}</p>"
+            f"</div></div>")
+    return "".join(cards)
 
 
 _CSS = """
@@ -574,12 +614,17 @@ thead th.l{text-align:left}
 .mvline .fa{color:var(--accent);font-weight:700}
 .st{font-weight:700}.st.ok{color:var(--win)}.st.no{color:var(--loss)}
 /* Rosters */
-.rosters{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+.rosters{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;
+  align-items:start}
 .rteam{padding:0;overflow:hidden}
-.rhead{display:flex;justify-content:space-between;align-items:baseline;gap:8px;
-  padding:11px 14px;border-bottom:2px solid var(--line);background:var(--surface-2)}
+.rteam>summary.rhead{display:flex;align-items:center;gap:10px;padding:11px 14px;
+  background:var(--surface-2);cursor:pointer;list-style:none;user-select:none}
+.rteam>summary.rhead::-webkit-details-marker{display:none}
+.rteam>summary.rhead::after{content:"▸";margin-left:6px;color:var(--muted);font-size:12px}
+.rteam[open]>summary.rhead::after{content:"▾"}
+.rteam[open]>summary.rhead{border-bottom:2px solid var(--line)}
 .rname{font-weight:700;font-family:"Oswald",sans-serif;letter-spacing:.3px}
-.rgm{font-size:12px;color:var(--muted)}
+.rgm{font-size:12px;color:var(--muted);margin-left:auto}
 .rlist{list-style:none;margin:0;padding:4px 0}
 .rlist li{display:flex;align-items:center;gap:10px;padding:5px 14px;font-size:13.5px}
 .rlist .pos{flex:0 0 34px;font-size:10px;font-weight:700;letter-spacing:.05em;
@@ -599,6 +644,22 @@ thead th.l{text-align:left}
 .biobox[open]>summary{color:var(--accent-ink);background:var(--accent)}
 .biobox .bio{margin:0;padding:10px 14px 12px;font-size:12.5px;line-height:1.5;
   color:var(--ink);border-top:1px solid var(--line)}
+/* Clickable GM name in chat -> bio card (CSS :target modal). */
+.namelink{color:inherit;text-decoration:underline;text-decoration-color:var(--accent);
+  text-underline-offset:2px;text-decoration-thickness:2px;cursor:pointer}
+.namelink:hover{color:var(--accent)}
+.biomodal{position:fixed;inset:0;z-index:60;display:none;align-items:center;
+  justify-content:center;padding:20px}
+.biomodal:target{display:flex}
+.biobackdrop{position:absolute;inset:0;background:rgba(0,0,0,.6)}
+.biocard{position:relative;z-index:1;width:100%;max-width:440px;background:var(--surface);
+  border:2px solid var(--line);border-left:8px solid var(--accent);padding:20px 22px}
+.bioclose{position:absolute;top:6px;right:12px;font-size:24px;line-height:1;
+  font-weight:700;color:var(--ink);text-decoration:none}
+.biocard-name{font-family:"Oswald",sans-serif;font-size:21px;font-weight:700;color:var(--ink)}
+.biocard-team{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--accent);margin:2px 0 10px}
+.biocard-text{margin:0;font-size:14px;line-height:1.6;color:var(--ink)}
 /* Chat -- a prominent, full-width section right under the standings. */
 .eyebrow.big{font-size:14px;padding:5px 12px}
 .chatwrap .card{border-width:2px}
@@ -670,15 +731,22 @@ def render(conn: sqlite3.Connection) -> str:
         n_final = conn.execute(
             "SELECT COUNT(*) FROM matchups WHERE status='final'").fetchone()[0]
         odds = playoffodds.playoff_odds(conn, seed=n_final)
-    games = _week_matchups(conn, shown_week, season)
+    reg = config.REGULAR_SEASON_WEEKS
     next_week = _next_week(conn)
     upcoming = _upcoming(conn, next_week, season)
+    weeks_html = _weeks_region(conn, season, reg)   # every completed week, newest first
     rosters = _rosters(conn)
     trades = _recent_trades(conn)
     claims = _waiver_history(conn)
     fa_week = next_week or (shown_week + 1)
     free_agents = _free_agents(conn, season, fa_week)
     chat = _recent_chat(conn)
+    # GM bio cards, opened by clicking a name in chat.
+    bios = {r["team_id"]: {"gm": r["gm_name"], "team": r["team_name"],
+                           "bio": r["bio"]}
+            for r in conn.execute(
+                "SELECT team_id, gm_name, team_name, bio FROM teams "
+                "WHERE bio IS NOT NULL AND bio != ''")}
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     wk_label = f"Week {week} final" if week else "Preseason"
 
@@ -688,10 +756,6 @@ def render(conn: sqlite3.Connection) -> str:
         cn = conn.execute("SELECT team_name FROM teams WHERE team_id=?",
                           (champ_id,)).fetchone()["team_name"]
         champ_html = f'<div class="champ">\U0001f3c6 Champion: {_esc(cn)}</div>'
-
-    reg = config.REGULAR_SEASON_WEEKS
-    mlabel = (f"Playoffs — Week {shown_week}" if shown_week > reg
-              else f"Week {shown_week} matchups")
 
     return f"""<!doctype html>
 <html lang="en">
@@ -736,17 +800,10 @@ def render(conn: sqlite3.Connection) -> str:
 
   <section class="chatwrap">
     <p class="eyebrow big">League chat</p>
-    <div class="card">{_chat_feed(chat)}</div>
-  </section>
-
-  <section>
-    <p class="eyebrow">{_esc(mlabel)}</p>
-    <p class="mnote">“proj” is a statistical estimate of each team’s total from its
-      starters’ recent scoring (last {config.SCORE_PROJ_WINDOW} games, bye-adjusted)
-      — not a prediction of the real games.</p>
-    {_matchup_cards(games)}
+    <div class="card">{_chat_feed(chat, bios)}</div>
   </section>
 {_upcoming_section(upcoming, next_week)}
+{weeks_html}
 
   <section>
     <p class="eyebrow">Rosters</p>
@@ -775,6 +832,7 @@ def render(conn: sqlite3.Connection) -> str:
   <footer>Created by Trevor Blum · AI Fantasy Football League ·
     generated {now}</footer>
 </div>
+{_bio_modals(bios)}
 </body>
 </html>"""
 
