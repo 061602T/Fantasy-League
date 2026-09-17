@@ -1135,10 +1135,6 @@ def render(conn: sqlite3.Connection) -> str:
         <tbody>{_standings_rows(standings, odds, bios)}</tbody>
       </table>
     </div>
-    {'<p class="mnote">Playoff% = share of 10,000 rest-of-season simulations '
-     'in which the team finishes in the top ' + str(playoffs._bracket_size()) +
-     ' — a statistical estimate from current standings and each team’s scoring '
-     'so far.</p>' if odds else ''}
   </section>
 
   <section class="chatwrap">
