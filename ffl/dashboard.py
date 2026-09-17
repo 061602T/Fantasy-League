@@ -790,7 +790,7 @@ a.gm.namelink{color:var(--muted)}
 .game{background:var(--surface);border:2px solid var(--line);padding:12px 14px}
 .gamelink{display:block;text-decoration:none;color:inherit;position:relative}
 .gamelink:hover .game{border-color:var(--accent)}
-.gamelink::after{content:"\2039";position:absolute;top:6px;right:9px;
+.gamelink::after{content:"›";position:absolute;top:6px;right:9px;
   color:var(--accent);font-weight:700;font-size:17px;line-height:1}
 .boxcard{max-width:680px;max-height:85vh;overflow-y:auto}
 .boxcols{display:flex;gap:16px;flex-wrap:wrap;margin-top:12px}
