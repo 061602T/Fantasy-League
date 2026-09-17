@@ -11,11 +11,12 @@ Path: FFL_DASHBOARD_PATH, default ~/ffl-data/dashboard.html.
 from __future__ import annotations
 
 import html
+import json
 import os
 import sqlite3
 from datetime import datetime, timezone
 
-from . import config, playoffs, playoffodds, scoreproj, winprob
+from . import config, governance, playoffs, playoffodds, scoreproj, winprob
 
 DEFAULT_PATH = os.path.join("~", "ffl-data", "dashboard.html")
 
@@ -808,15 +809,101 @@ thead th.l{text-align:left}
 .falist .fproj{color:var(--muted);font-weight:700;font-size:12px;
   font-variant-numeric:tabular-nums}
 .empty{color:var(--muted);padding:16px;margin:0}
-.aboutbtn{margin-left:auto;align-self:center;cursor:pointer;white-space:nowrap;
+.headerbtns{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.aboutbtn{align-self:center;cursor:pointer;white-space:nowrap;
   text-decoration:none;font:600 13px/1 "Oswald",sans-serif;letter-spacing:.06em;
   text-transform:uppercase;color:var(--accent-ink);background:var(--accent);
   border:2px solid var(--line);padding:7px 14px}
 .aboutbtn:hover{filter:brightness(1.06)}
 .aboutcard{max-width:600px;max-height:85vh;overflow-y:auto}
 .aboutcard .biocard-text + .biocard-text{margin-top:12px}
+.bylaw-sec{font:700 12px/1 "Oswald",sans-serif;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--accent);margin:16px 0 8px}
+.bylaws{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+.bylaw-item{border:2px solid var(--line);border-left:6px solid var(--accent);
+  background:var(--surface-2);padding:10px 12px}
+.bylaw-title{font-weight:700;font-size:15px;color:var(--ink)}
+.bylaw-by{font-size:11px;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.04em;margin-top:1px}
+.bylaw-pitch{font-size:13.5px;line-height:1.5;margin-top:6px;overflow-wrap:anywhere}
+.bylaw-eff{font-size:12.5px;font-weight:700;color:var(--win);margin-top:6px}
+.bylaw-status{display:inline-block;margin-top:8px;font:700 11px/1.3 "Oswald",sans-serif;
+  letter-spacing:.03em;text-transform:uppercase;padding:4px 8px;border:2px solid var(--line)}
+.bylaw-status.pending{background:var(--gold);color:var(--accent-ink)}
+.bylaw-status.open{background:var(--accent);color:var(--accent-ink)}
 footer{margin-top:24px;color:var(--muted);font-size:12px;text-align:center;font-weight:600}
 """
+
+
+def _bylaws_modal(conn) -> str:
+    """The governance popup (opened by the header 'Bylaws' button): standing
+    rules, punishments in effect, items pending the commissioner's approval, and
+    any vote currently on the floor. Reads ffl.governance; empty until the GMs
+    actually pass something."""
+    lore = governance.list_bylaws(conn, ["enacted_lore"])
+    enacted = governance.list_bylaws(conn, ["enacted_effect"])
+    pend = governance.list_bylaws(conn, ["passed_pending"])
+    voting = governance.list_bylaws(conn, ["voting"])
+
+    def _prop(b):
+        if not b["proposer_team_id"]:
+            return "the league"
+        r = conn.execute("SELECT team_name FROM teams WHERE team_id=?",
+                         (b["proposer_team_id"],)).fetchone()
+        return r["team_name"] if r else "the league"
+
+    def _item(b, extra=""):
+        pitch = (f"<div class='bylaw-pitch'>{_esc(b['rationale'])}</div>"
+                 if b["rationale"] else "")
+        return (f"<li class='bylaw-item'>"
+                f"<div class='bylaw-title'>{_esc(b['title'])}</div>"
+                f"<div class='bylaw-by'>proposed by {_esc(_prop(b))}</div>"
+                f"{pitch}{extra}</li>")
+
+    def _loads(s):
+        try:
+            return json.loads(s or "{}")
+        except (ValueError, TypeError):
+            return {}
+
+    def _section(label, rows):
+        return (f"<div class='bylaw-sec'>{label}</div><ul class='bylaws'>"
+                + "".join(rows) + "</ul>")
+
+    secs = []
+    if lore:
+        secs.append(_section("Standing rules", [_item(b) for b in lore]))
+    if enacted:
+        rows = []
+        for b in enacted:
+            summ = _esc(_loads(b["enacted_json"]).get("summary", ""))
+            extra = f"<div class='bylaw-eff'>In effect: {summ}</div>" if summ else ""
+            rows.append(_item(b, extra))
+        secs.append(_section("Punishments in effect", rows))
+    if pend:
+        rows = []
+        for b in pend:
+            t = _loads(b["tally_json"])
+            chip = (f"<span class='bylaw-status pending'>passed "
+                    f"{t.get('yes', '?')}-{t.get('no', '?')} &middot; awaiting "
+                    f"commissioner</span>")
+            rows.append(_item(b, chip))
+        secs.append(_section("Passed &mdash; pending approval", rows))
+    if voting:
+        rows = [_item(b, f"<span class='bylaw-status open'>voting open until "
+                         f"{_esc(b['votes_close_at'])} UTC</span>") for b in voting]
+        secs.append(_section("On the floor", rows))
+
+    body = "".join(secs) or (
+        "<p class='biocard-text'>The GMs haven't passed any bylaws yet. When they "
+        "propose one and vote it through, it shows up here &mdash; standing rules, "
+        "punishments in effect, and anything awaiting the commissioner.</p>")
+    return (f"<div class='biomodal aboutmodal' id='bylaws'>"
+            f"<a class='biobackdrop' href='#'></a>"
+            f"<div class='biocard aboutcard'>"
+            f"<a class='bioclose' href='#' title='Close'>&times;</a>"
+            f"<div class='biocard-name'>League Bylaws</div>"
+            f"{body}</div></div>")
 
 
 def render(conn: sqlite3.Connection) -> str:
@@ -875,7 +962,10 @@ def render(conn: sqlite3.Connection) -> str:
 <div class="wrap">
   <div class="scorebar">
     <h1>AI Fantasy Football League</h1>
-    <a class="aboutbtn" href="#about">About</a>
+    <span class="headerbtns">
+      <a class="aboutbtn" href="#bylaws">Bylaws</a>
+      <a class="aboutbtn" href="#about">About</a>
+    </span>
     {champ_html}
   </div>
 
@@ -937,6 +1027,7 @@ def render(conn: sqlite3.Connection) -> str:
 </div>
 {_bio_modals(bios)}
 {_ABOUT_MODAL}
+{_bylaws_modal(conn)}
 </body>
 </html>"""
 
