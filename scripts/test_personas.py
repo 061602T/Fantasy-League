@@ -102,9 +102,63 @@ def test_persistence(people, transcript):
           f"{named} attributed / {system} system)")
 
 
+def _fake_cast(n=8):
+    """A mocked single-call response: Dale first, then n-1 varied friends."""
+    chatty = ["trash-talker", "quiet", "moderate", "trash-talker", "quiet",
+              "moderate", "balanced-bad-value", "loud"]
+    risk = ["boom-bust", "safe-floor", "balanced", "Boom Bust", "safe floor",
+            "balanced", "whatever", "boom-bust"]
+    gms = [{"gm_name": "Dale Ferraro", "team_name": "Back Home Bandits",
+            "personality": "Talks nonstop, blows FAAB on impulse.",
+            "bio": "Dale is a talker who references back home constantly...",
+            "risk_tolerance": risk[0], "valuation_bias": "chases upside",
+            "chattiness": chatty[0], "catchphrase": "back home we'd never"}]
+    for i in range(1, n):
+        gms.append({"gm_name": f"Real Name{i}", "team_name": f"Funny Team {i}",
+                    "personality": f"distinct GM {i}", "bio": f"baggage {i}",
+                    "risk_tolerance": risk[i % len(risk)],
+                    "valuation_bias": "quirk", "chattiness": chatty[i % len(chatty)],
+                    "catchphrase": "line"})
+    return {"gms": gms}
+
+
+def test_generate_cast():
+    personas.llm.chat_json = lambda *a, **k: _fake_cast(8)
+    cast = personas.generate_cast(8)
+    assert len(cast) == 8, len(cast)
+    # Dale is first and keeps his seed identity.
+    assert cast[0]["gm_name"] == "Dale Ferraro" and cast[0]["bio"]
+    # Free-text enums are coerced onto the allowed sets ("Boom Bust" -> boom-bust,
+    # "whatever"/"loud" -> defaults).
+    assert all(p["risk_tolerance"] in personas.RISK_TOLERANCES for p in cast)
+    assert all(p["chattiness"] in personas.CHATTINESS for p in cast)
+    assert cast[3]["risk_tolerance"] == "boom-bust"      # "Boom Bust" coerced
+    # Every persona carries the full structured field set + raw.
+    for p in cast:
+        assert {"gm_name", "team_name", "personality", "bio", "catchphrase",
+                "_raw"} <= set(p)
+    # The prompt actually embeds the seed and the naming rules we depend on.
+    assert "back home" in personas._CAST_SYSTEM.lower()
+    assert "DALE FIRST" in personas._CAST_SYSTEM
+    print("ok: generate_cast (single call -> 8 normalized GMs, Dale first)")
+
+
+def test_generate_cast_short_response_raises():
+    personas.llm.chat_json = lambda *a, **k: _fake_cast(5)   # only 5 GMs
+    try:
+        personas.generate_cast(8)
+    except RuntimeError as e:
+        assert "expected 8" in str(e), e
+        print("ok: generate_cast raises when the model returns too few GMs")
+        return
+    raise AssertionError("expected RuntimeError on a short cast")
+
+
 def main():
     test_extract_json()
     test_norm_and_enum()
+    test_generate_cast()
+    test_generate_cast_short_response_raises()
     people, transcript = test_collision_resolution()
     test_persistence(people, transcript)
     print("\nALL OFFLINE PERSONA TESTS PASSED")
