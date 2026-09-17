@@ -61,7 +61,7 @@ def _week_matchups(conn, week, season_year=None):
     names = {r["team_id"]: r["team_name"]
              for r in conn.execute("SELECT team_id, team_name FROM teams")}
     rows = conn.execute(
-        """SELECT home_team_id, away_team_id, home_points, away_points,
+        """SELECT matchup_id, home_team_id, away_team_id, home_points, away_points,
                   winner_team_id, status FROM matchups WHERE week=?
             ORDER BY matchup_id""", (week,)).fetchall()
     # Statistical projected totals (recent-form, bye-aware) shown next to the
@@ -75,6 +75,7 @@ def _week_matchups(conn, week, season_year=None):
         ap_proj = scoreproj.project_team(
             conn, m["away_team_id"], season_year, week, bye_teams=bye)["proj"]
         out.append({
+            "mid": m["matchup_id"], "week": week,
             "home": names.get(m["home_team_id"], "?"),
             "away": names.get(m["away_team_id"], "?"),
             "hp": m["home_points"], "ap": m["away_points"],
@@ -355,7 +356,7 @@ def _matchup_cards(games):
         acl = " won" if g["away_win"] else ""
         hpp = _proj_tag(g.get("hp_proj"))
         app = _proj_tag(g.get("ap_proj"))
-        cards.append(
+        game = (
             f"<div class='game'>"
             f"<div class='side{hcl}'><span class='sname'>{_esc(g['home'])}</span>"
             f"<span class='sbox'><span class='sscore'>{hp}</span>{hpp}</span></div>"
@@ -363,6 +364,12 @@ def _matchup_cards(games):
             f"<div class='side{acl}'><span class='sname'>{_esc(g['away'])}</span>"
             f"<span class='sbox'><span class='sscore'>{ap}</span>{app}</span></div>"
             f"</div>")
+        # A scored game links to its per-player box score (a :target modal).
+        if g["final"] and g.get("mid") is not None:
+            cards.append(f"<a class='gamelink' href='#box-{g['mid']}' "
+                         f"title='View box score'>{game}</a>")
+        else:
+            cards.append(game)
     return "<div class='games'>" + "".join(cards) + "</div>"
 
 
@@ -577,6 +584,74 @@ def _draft_feed(picks, bios=None):
     return "<ul class='chat draft'>" + "".join(items) + "</ul>"
 
 
+_SLOT_ORDER = {"QB": 0, "RB": 1, "WR": 2, "TE": 3, "FLEX": 4, "K": 5, "DST": 6}
+
+
+def _box_score(conn, week, team_id, season):
+    """A team's starters for a week with each one's fantasy points, in lineup
+    order. Points come from player_weekly_scores; the sum is the team's total."""
+    rows = conn.execute(
+        """SELECT l.slot, p.name, p.position, s.fantasy_points AS pts
+             FROM lineups l
+             JOIN players p ON p.player_id = l.player_id
+             LEFT JOIN player_weekly_scores s
+               ON s.player_id = l.player_id AND s.season = ? AND s.week = ?
+            WHERE l.team_id = ? AND l.week = ? AND l.slot != 'BENCH'""",
+        (season, week, team_id, week)).fetchall()
+    items = [{"slot": r["slot"], "name": r["name"], "pos": r["position"],
+              "pts": r["pts"]} for r in rows]
+    items.sort(key=lambda x: (_SLOT_ORDER.get(x["slot"], 9), -(x["pts"] or 0.0)))
+    return items
+
+
+def _box_modals(conn, season) -> str:
+    """Hidden per-matchup box scores for every scored game, revealed via :target
+    when its card is clicked (backdrop / × close). One modal per final matchup."""
+    names = {r["team_id"]: r["team_name"]
+             for r in conn.execute("SELECT team_id, team_name FROM teams")}
+    finals = conn.execute(
+        """SELECT matchup_id, week, home_team_id, away_team_id, home_points,
+                  away_points, winner_team_id FROM matchups
+            WHERE status = 'final' ORDER BY week DESC, matchup_id""").fetchall()
+
+    def _col(tid, pts, won):
+        rows = _box_score(conn, m["week"], tid, season)
+        lis = "".join(
+            f"<li class='boxrow'><span class='bslot'>{_esc(b['slot'])}</span>"
+            f"<span class='bname'>{_esc(b['name'])} "
+            f"<span class='bpos'>{_esc(b['pos'])}</span></span>"
+            f"<span class='bpts'>"
+            f"{('%.1f' % b['pts']) if b['pts'] is not None else '&ndash;'}</span></li>"
+            for b in rows)
+        if not lis:
+            lis = ("<li class='boxrow'><span class='bname'>No lineup recorded "
+                   "for this week.</span></li>")
+        wc = " won" if won else ""
+        return (f"<div class='boxcol'><div class='boxteam{wc}'>"
+                f"<span>{_esc(names.get(tid, '?'))}</span>"
+                f"<span class='boxtot'>{pts:.1f}</span></div>"
+                f"<ul class='boxlist'>{lis}</ul></div>")
+
+    mods = []
+    for m in finals:
+        h, a = m["home_team_id"], m["away_team_id"]
+        hp = m["home_points"] if m["home_points"] is not None else 0.0
+        ap = m["away_points"] if m["away_points"] is not None else 0.0
+        mods.append(
+            f"<div class='biomodal boxmodal' id='box-{m['matchup_id']}'>"
+            f"<a class='biobackdrop' href='#'></a>"
+            f"<div class='biocard boxcard'>"
+            f"<a class='bioclose' href='#' title='Close'>&times;</a>"
+            f"<div class='biocard-name'>{_esc(names.get(h, '?'))} {hp:.1f} "
+            f"&ndash; {ap:.1f} {_esc(names.get(a, '?'))}</div>"
+            f"<div class='biocard-team'>Week {m['week']}</div>"
+            f"<div class='boxcols'>"
+            f"{_col(h, hp, m['winner_team_id'] == h)}"
+            f"{_col(a, ap, m['winner_team_id'] == a)}"
+            f"</div></div></div>")
+    return "".join(mods)
+
+
 def _bio_modals(bios) -> str:
     """Hidden bio cards, one per GM with a bio, revealed via :target when a chat
     name is clicked. A backdrop link and a × close both clear the hash."""
@@ -665,6 +740,27 @@ thead th.l{text-align:left}
 .muted{color:var(--muted)}
 .games{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
 .game{background:var(--surface);border:2px solid var(--line);padding:12px 14px}
+.gamelink{display:block;text-decoration:none;color:inherit;position:relative}
+.gamelink:hover .game{border-color:var(--accent)}
+.gamelink::after{content:"\2039";position:absolute;top:6px;right:9px;
+  color:var(--accent);font-weight:700;font-size:17px;line-height:1}
+.boxcard{max-width:680px;max-height:85vh;overflow-y:auto}
+.boxcols{display:flex;gap:16px;flex-wrap:wrap;margin-top:12px}
+.boxcol{flex:1 1 260px;min-width:0}
+.boxteam{display:flex;justify-content:space-between;align-items:baseline;gap:8px;
+  font-family:"Oswald",sans-serif;font-weight:700;font-size:15px;
+  border-bottom:2px solid var(--line);padding-bottom:5px;margin-bottom:2px}
+.boxteam.won{color:var(--accent)}
+.boxtot{font-variant-numeric:tabular-nums}
+.boxlist{list-style:none;margin:0;padding:0}
+.boxrow{display:flex;align-items:baseline;gap:9px;padding:5px 0;font-size:13px;
+  border-bottom:1px solid var(--line)}
+.boxrow:last-child{border-bottom:0}
+.bslot{flex:0 0 38px;font-weight:700;font-size:10.5px;letter-spacing:.03em;
+  color:var(--muted);text-transform:uppercase}
+.bname{flex:1;min-width:0;overflow-wrap:anywhere}
+.bpos{font-size:10px;color:var(--muted);font-weight:600}
+.bpts{font-weight:700;font-variant-numeric:tabular-nums}
 .side{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:4px 0}
 .side .sname{font-weight:600}
 .side .sbox{display:flex;flex-direction:column;align-items:flex-end;line-height:1.05}
@@ -1032,6 +1128,7 @@ def render(conn: sqlite3.Connection) -> str:
 {_bio_modals(bios)}
 {_ABOUT_MODAL}
 {_bylaws_modal(conn)}
+{_box_modals(conn, season)}
 </body>
 </html>"""
 
