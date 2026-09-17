@@ -8,7 +8,7 @@ import sys, os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ffl import db, winprob
+from ffl import config, db, season, winprob
 
 
 def test_normal_cdf():
@@ -36,23 +36,76 @@ def test_win_probability_math():
     print("ok: win_probability (coin flip, closed-form value, fallbacks)")
 
 
-def test_team_dist_fallbacks():
-    from ffl import config
-    # >=2 games with sample sd ABOVE the floor -> sample sd used.
-    d = winprob.team_dist([60, 140], pooled=10.0)          # sample sd = sqrt(3200)
-    assert d[0] == 100.0 and abs(d[1] - (3200 ** 0.5)) < 1e-9, d
-    # >=2 games but a tight sample -> sd floored at the pooled league sd.
-    dt = winprob.team_dist([95, 105], pooled=20.0)          # sample sd = sqrt(50) < 20
-    assert dt == (100.0, 20.0), dt
-    # 1 game -> mean is that score, sd is the pooled floor.
-    assert winprob.team_dist([105], pooled=12.0) == (105, 12.0)
-    # 1 game, no pooled -> configured default sd.
-    assert winprob.team_dist([105], pooled=None) == (105, config.WINPROB_DEFAULT_SD)
-    # No games -> None.
-    assert winprob.team_dist([], pooled=10) is None
-    # Degenerate all-equal history (sample sd 0) -> pooled floor.
-    assert winprob.team_dist([80, 80, 80], pooled=15.0) == (80.0, 15.0)
-    print("ok: team_dist (sample sd, pooled floor, thin-history/degenerate fallbacks)")
+def test_league_prior():
+    # prior_mean = mean of team means; prior_sd = pooled sd (>=2-game teams).
+    pm, ps = winprob.league_prior({1: [100, 120], 2: [90, 110, 100], 3: [50]})
+    assert abs(pm - (110 + 100 + 50) / 3) < 1e-9, pm
+    assert abs(ps - (150 ** 0.5)) < 1e-9, ps       # sqrt(mean(var=200, var=100))
+    # No usable history -> mean 0, sd the configured default.
+    assert winprob.league_prior({1: [], 2: []}) == (0.0, config.WINPROB_DEFAULT_SD)
+    print("ok: league_prior (mean of means; pooled sd, default when thin)")
+
+
+def test_team_dist_shrinkage():
+    prior = (100.0, 20.0)                           # (prior_mean, prior_sd), K=4
+    # No games -> None (caller supplies the default).
+    assert winprob.team_dist([], prior) is None
+    # 1 game: mean shrunk toward the prior (n/(n+K) = 1/5 weight on the team),
+    # sd = prior_sd inflated by the mean-estimate uncertainty sqrt(1 + 1/(n+K)).
+    mu, sd = winprob.team_dist([120], prior)
+    assert abs(mu - (0.2 * 120 + 0.8 * 100)) < 1e-9, mu           # 104.0
+    assert abs(sd - (400 * (1 + 1 / 5)) ** 0.5) < 1e-6, sd        # sqrt(480)
+    # A single big week does NOT read as a lock: 140 pulls only to 108.
+    assert winprob.team_dist([140], prior)[0] == 0.2 * 140 + 0.8 * 100
+    # Shrinkage fades as games accumulate: same average, more games -> closer to it.
+    mu1 = winprob.team_dist([140], prior)[0]
+    mu8 = winprob.team_dist([140] * 8, prior)[0]
+    assert mu8 > mu1 and mu8 < 140, (mu1, mu8)
+    # A tight 2-game sample stays floored at the prior spread (not overconfident);
+    # a wide one raises it above the prior.
+    tight = winprob.team_dist([95, 105], prior)[1]
+    wide = winprob.team_dist([60, 140], prior)[1]
+    assert tight >= 20.0 and wide > tight, (tight, wide)
+    print("ok: team_dist shrinkage (mean->prior, sd floor + inflation, fades with n)")
+
+
+def _one_game_league(conn):
+    """8 teams, a full schedule, only Week 1 played (one score per team)."""
+    for slot in range(1, 9):
+        conn.execute("INSERT INTO teams(team_name, gm_name, draft_slot) "
+                     "VALUES(?,?,?)", (f"T{slot}", f"GM{slot}", slot))
+    conn.commit()
+    season.build_schedule(conn)
+    ids = [r["team_id"] for r in conn.execute(
+        "SELECT team_id FROM teams ORDER BY draft_slot")]
+    scores = dict(zip(ids, [139.5, 88.2, 121.0, 95.7, 110.3, 102.8, 130.1, 76.4]))
+    for m in conn.execute("SELECT matchup_id, home_team_id, away_team_id "
+                          "FROM matchups WHERE week=1").fetchall():
+        h, a = m["home_team_id"], m["away_team_id"]
+        hp, ap = scores[h], scores[a]
+        win = h if hp > ap else (a if ap > hp else None)
+        conn.execute("UPDATE matchups SET home_points=?, away_points=?, "
+                     "winner_team_id=?, status='final' WHERE matchup_id=?",
+                     (hp, ap, win, m["matchup_id"]))
+    conn.commit()
+    season.recompute_standings(conn)
+    return ids, scores
+
+
+def test_one_game_history_not_overconfident():
+    """A single game per team must not produce a near-certain Week-2 matchup."""
+    conn = db.init_db(":memory:")
+    _one_game_league(conn)
+    rows = winprob.matchup_winprobs(conn, week=2)
+    assert rows, "no week-2 matchups"
+    for r in rows:
+        assert r["n_home"] == 1 and r["n_away"] == 1, r
+        assert config.PRED_PROB_CAP_LO <= r["home_wp"] <= config.PRED_PROB_CAP_HI
+        # One game is weak evidence -> nothing should be lopsided.
+        assert 0.25 < r["home_wp"] < 0.75, r
+        assert abs(r["home_wp"] + r["away_wp"] - 1.0) < 1e-9
+    spread = ", ".join(f"{r['home_wp']:.2f}" for r in rows)
+    print(f"ok: 1-game history -> near coin-flip week-2 win probs ({spread})")
 
 
 def test_pooled_sd():
@@ -124,10 +177,12 @@ def test_matchup_winprobs():
 def main():
     test_normal_cdf()
     test_win_probability_math()
-    test_team_dist_fallbacks()
+    test_league_prior()
+    test_team_dist_shrinkage()
     test_pooled_sd()
     test_team_weekly_scores_scope()
     test_matchup_winprobs()
+    test_one_game_history_not_overconfident()
     print("\nALL OFFLINE WIN-PROBABILITY TESTS PASSED")
     return 0
 

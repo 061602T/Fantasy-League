@@ -16,19 +16,23 @@ independent teams' margin is then Normal(mu_a - mu_b, sigma_a^2 + sigma_b^2), so
 where Phi is the standard normal CDF. A tie has probability ~0 under a
 continuous model, so the two sides' probabilities sum to 1.
 
-Spread when history is thin
----------------------------
-A team with fewer than two games has no usable variance yet, so its sigma falls
-back to a **pooled** league spread -- the root-mean of the per-team variances of
-teams that do have >=2 games -- and, failing even that, to
-``config.WINPROB_DEFAULT_SD``. With no games at all a matchup is 50/50.
+Small-sample shrinkage
+----------------------
+Early in a season both mu and sigma come from a handful of games and are far too
+trusting: one big week makes a team look like a lock. So each is shrunk toward a
+league-wide prior -- the average team mean, and the pooled week-to-week spread
+(root-mean of the per-team sample variances, falling back to
+``config.WINPROB_DEFAULT_SD``). With ``K = config.PRED_PRIOR_GAMES`` pseudo-games
+of prior weight, a team with n games gets weight ``n/(n+K)`` on its own data:
+the prior dominates at n=1 and fades to nothing by ~8-10 games, so late-season
+forecasts are essentially the old sample-based ones.
 
-Even *with* two-plus games, a small early-season sample can land freakishly
-tight and understate a team's true week-to-week variance, which makes the model
-overconfident. So a team's sigma is **floored at the pooled league spread**: no
-team is treated as steadier than the league norm. On the 2025 backtest this
-floor is what makes the forecasts beat a coin flip on log loss (0.68 vs 0.69)
-rather than lose to it, without changing which side is favoured.
+The predictive spread also carries the *uncertainty in that shrunk mean* (a
+factor ``sqrt(1 + 1/(n+K))``), which is widest when n is small -- this is what
+stops a single good week from reading as a near-certain win. The blended
+variance is still floored at the league spread, so no team is treated as
+steadier than the norm. Displayed matchup probabilities are finally clamped to
+``[PRED_PROB_CAP_LO, PRED_PROB_CAP_HI]``: a single head-to-head is never a lock.
 """
 from __future__ import annotations
 
@@ -79,23 +83,40 @@ def pooled_sd(all_scores: dict[int, list[float]]) -> float | None:
     return math.sqrt(fmean(vars))
 
 
-def team_dist(scores: list[float], pooled: float | None) -> tuple[float, float] | None:
-    """(_mean, sd) for a team.
+def league_prior(all_scores: dict[int, list[float]]) -> tuple[float, float]:
+    """(prior_mean, prior_sd): the league-wide prior a thin per-team sample is
+    shrunk toward. prior_mean is the average of the teams' mean scores (0 with no
+    games); prior_sd is the pooled week-to-week SD, or
+    ``config.WINPROB_DEFAULT_SD`` when no team has >=2 games yet."""
+    means = [fmean(s) for s in all_scores.values() if s]
+    prior_mean = fmean(means) if means else 0.0
+    pooled = pooled_sd(all_scores)
+    return prior_mean, (pooled if pooled else config.WINPROB_DEFAULT_SD)
 
-    With >=2 games the sample SD is used but *floored at the pooled league SD*
-    (a tight small sample understates the true week-to-week spread). With fewer
-    than two games -- or a degenerate all-equal history -- the SD falls back to
-    the pooled SD, then to ``config.WINPROB_DEFAULT_SD``. None if no games.
+
+def team_dist(scores: list[float],
+              prior: tuple[float, float]) -> tuple[float, float] | None:
+    """(mean, sd) for a team, shrunk toward the league `prior` = (mean, sd).
+
+    Mean and variance are blended with the prior by weight ``n/(n+K)`` on the
+    team's own data (``K = config.PRED_PRIOR_GAMES``), so a 1-2 game sample leans
+    on the prior and a full-season sample barely does. The SD then carries the
+    uncertainty in that shrunk mean via ``sqrt(1 + 1/(n+K))`` -- widest when n is
+    small -- and the blended variance is floored at the prior variance so no team
+    reads as steadier than the league. Returns None only with no games at all.
     """
-    if not scores:
+    n = len(scores)
+    if n == 0:
         return None
-    mu = fmean(scores)
-    floor = pooled if pooled else config.WINPROB_DEFAULT_SD
-    if len(scores) >= 2:
-        sd = max(math.sqrt(variance(scores)), floor)
-    else:
-        sd = floor
-    if sd <= 0:                          # degenerate (all-equal, no pooled)
+    prior_mean, prior_sd = prior
+    k = config.PRED_PRIOR_GAMES
+    w = n / (n + k)                                  # weight on the team's own data
+    mu = w * fmean(scores) + (1.0 - w) * prior_mean
+    prior_var = prior_sd * prior_sd
+    team_var = variance(scores) if n >= 2 else prior_var
+    blended = max(w * team_var + (1.0 - w) * prior_var, prior_var)
+    sd = math.sqrt(blended * (1.0 + 1.0 / (n + k)))  # + mean-estimate uncertainty
+    if sd <= 0:                                      # pathological guard
         sd = config.WINPROB_DEFAULT_SD
     return mu, sd
 
@@ -126,15 +147,17 @@ def matchup_winprobs(conn: sqlite3.Connection, week: int) -> list[dict]:
     names = {r["team_id"]: r["team_name"]
              for r in conn.execute("SELECT team_id, team_name FROM teams")}
     hist = team_weekly_scores(conn, before_week=week)
-    pooled = pooled_sd(hist)
+    prior = league_prior(hist)
+    lo, hi = config.PRED_PROB_CAP_LO, config.PRED_PROB_CAP_HI
     out = []
     for m in conn.execute(
             """SELECT home_team_id, away_team_id FROM matchups
                 WHERE week = ? ORDER BY matchup_id""", (week,)).fetchall():
         h, a = m["home_team_id"], m["away_team_id"]
-        dh = team_dist(hist.get(h, []), pooled)
-        da = team_dist(hist.get(a, []), pooled)
-        hwp = win_probability(dh, da)
+        dh = team_dist(hist.get(h, []), prior)
+        da = team_dist(hist.get(a, []), prior)
+        # Clamp the displayed probability: a single head-to-head is never a lock.
+        hwp = min(hi, max(lo, win_probability(dh, da)))
         out.append({
             "home_team_id": h, "away_team_id": a,
             "home": names.get(h, "?"), "away": names.get(a, "?"),

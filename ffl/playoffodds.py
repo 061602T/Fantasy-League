@@ -24,7 +24,6 @@ deterministic: the current top seeds are 100%, everyone else 0%.
 from __future__ import annotations
 
 import sqlite3
-from statistics import fmean
 
 import numpy as np
 
@@ -48,19 +47,16 @@ def current_records(conn: sqlite3.Connection) -> dict[int, tuple[int, float]]:
 def team_distributions(conn: sqlite3.Connection) -> dict[int, tuple[float, float]]:
     """{team_id: (mean, sd)} for simulating scores, from season-so-far totals.
 
-    Reuses winprob's floored distributions so odds and win probabilities agree.
-    A team with no games yet is given the league-average mean and the pooled sd,
-    so a fresh season starts everyone near-symmetric rather than undefined.
+    Reuses winprob's shrunk distributions so odds and win probabilities agree and
+    a thin early-season sample can't lock a team in. A team with no games yet is
+    given the league prior itself, so a fresh season starts everyone symmetric.
     """
     hist = winprob.team_weekly_scores(conn)
-    pooled = winprob.pooled_sd(hist)
-    means = [fmean(s) for s in hist.values() if s]
-    league_mu = fmean(means) if means else 0.0
-    fallback_sd = pooled if pooled else config.WINPROB_DEFAULT_SD
+    prior = winprob.league_prior(hist)
     dists = {}
     for tid, scores in hist.items():
-        d = winprob.team_dist(scores, pooled)
-        dists[tid] = d if d is not None else (league_mu, fallback_sd)
+        d = winprob.team_dist(scores, prior)
+        dists[tid] = d if d is not None else prior
     return dists
 
 

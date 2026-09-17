@@ -186,6 +186,18 @@ SCORE_PROJ_WINDOW = 4
 # team week is empirically ~28 pts sd). A statistical estimate, not a lock.
 WINPROB_DEFAULT_SD = 28.0
 
+# --- Prediction regularization (winprob + playoffodds) ---------------------
+# Small samples early in a season make the forecasts overconfident: a team's
+# mean and variance come from one or two games and get trusted as its true
+# talent. Both are shrunk toward a league-wide prior with this many pseudo-games
+# of weight -- weight on the team's own data is n/(n+K), so the prior dominates
+# at n=1 and barely matters by ~8-10 games. Displayed matchup win probabilities
+# are also clamped to [CAP_LO, CAP_HI] so a single head-to-head never shows a
+# flat 100%/0%.
+PRED_PRIOR_GAMES = float(os.environ.get("FFL_PRED_PRIOR_GAMES", "4"))
+PRED_PROB_CAP_LO = float(os.environ.get("FFL_PRED_PROB_CAP_LO", "0.02"))
+PRED_PROB_CAP_HI = float(os.environ.get("FFL_PRED_PROB_CAP_HI", "0.98"))
+
 # Playoff odds (ffl/playoffodds.py): Monte-Carlo simulation count. Each rest-of-
 # season simulation draws every remaining game from the teams' scoring
 # distributions and re-seeds the standings; the odds are the share of sims a

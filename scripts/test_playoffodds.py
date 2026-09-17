@@ -112,6 +112,49 @@ def test_seed_determinism():
     print("ok: seed determinism (reproducible; varies with seed)")
 
 
+def _one_game_season(conn):
+    """8 teams, a full schedule, only Week 1 played -- a single score per team."""
+    for slot in range(1, 9):
+        conn.execute("INSERT INTO teams(team_name, gm_name, draft_slot) "
+                     "VALUES(?,?,?)", (f"T{slot}", f"GM{slot}", slot))
+    conn.commit()
+    season.build_schedule(conn)
+    ids = [r["team_id"] for r in conn.execute(
+        "SELECT team_id FROM teams ORDER BY draft_slot")]
+    scores = dict(zip(ids, [139.5, 88.2, 121.0, 95.7, 110.3, 102.8, 130.1, 76.4]))
+    for m in conn.execute("SELECT matchup_id, home_team_id, away_team_id "
+                          "FROM matchups WHERE week=1").fetchall():
+        h, a = m["home_team_id"], m["away_team_id"]
+        hp, ap = scores[h], scores[a]
+        win = h if hp > ap else (a if ap > hp else None)
+        conn.execute("UPDATE matchups SET home_points=?, away_points=?, "
+                     "winner_team_id=?, status='final' WHERE matchup_id=?",
+                     (hp, ap, win, m["matchup_id"]))
+    conn.commit()
+    season.recompute_standings(conn)
+    return ids, scores
+
+
+def test_one_game_season_not_degenerate():
+    """With a single game per team, small-sample shrinkage must produce a real
+    spread of playoff odds -- not the 100%/0% the raw sample used to give."""
+    conn = db.init_db(":memory:")
+    ids, scores = _one_game_season(conn)
+    odds = playoffodds.playoff_odds(conn, iterations=6000, seed=1)
+    ps = list(odds.values())
+    # Still a valid distribution: exactly `cutoff` teams make it each sim.
+    assert abs(sum(ps) - 4.0) < 1e-9, sum(ps)
+    # The red flag we're fixing: nothing should read as near-certain after 1 game.
+    assert max(ps) < 0.9 and min(ps) > 0.1, sorted(ps, reverse=True)
+    # But the signal isn't erased -- the best Week-1 team still leads the worst.
+    best = max(ids, key=lambda t: scores[t])
+    worst = min(ids, key=lambda t: scores[t])
+    assert odds[best] > odds[worst], (odds[best], odds[worst])
+    hi, lo = odds[best] * 100, odds[worst] * 100
+    print(f"ok: 1-game season -> plausible spread (best {hi:.0f}%, worst {lo:.0f}%, "
+          f"not 100/0)")
+
+
 def test_no_remaining_games_is_deterministic():
     conn = db.init_db(":memory:")
     good, bad = _league8(conn)
@@ -132,6 +175,7 @@ def main():
     test_made_counts_core()
     test_simulation_topheavy_and_invariants()
     test_seed_determinism()
+    test_one_game_season_not_degenerate()
     test_no_remaining_games_is_deterministic()
     print("\nALL OFFLINE PLAYOFF-ODDS TESTS PASSED")
     return 0
