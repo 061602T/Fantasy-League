@@ -510,6 +510,63 @@ def _chat_feed(chat, bios=None):
     return "<ul class='chat'>" + "".join(items) + "</ul>"
 
 
+def _draft_chat(conn):
+    """The draft, oldest first (R1.1 on top): every pick line plus the rival
+    reactions that landed during it. Bounded by the chat_id span of the 'draft'
+    rows -- 'banter' is reused by the regular-season chat, so the window, not the
+    event_type, is what keeps pre-draft setup notes and in-season chatter out."""
+    win = conn.execute(
+        "SELECT MIN(chat_id) lo, MAX(chat_id) hi FROM chat_log "
+        "WHERE event_type = 'draft'").fetchone()
+    if not win or win["lo"] is None:
+        return []
+    rows = conn.execute(
+        """SELECT c.event_type, c.message, c.created_at, c.team_id, t.gm_name
+             FROM chat_log c LEFT JOIN teams t ON t.team_id = c.team_id
+            WHERE c.chat_id BETWEEN ? AND ?
+            ORDER BY c.chat_id ASC""", (win["lo"], win["hi"])).fetchall()
+    return [{"who": r["gm_name"] or "League", "kind": r["event_type"],
+             "msg": r["message"], "ts": r["created_at"], "team_id": r["team_id"]}
+            for r in rows]
+
+
+def _draft_feed(picks, bios=None):
+    """The draft board rendered like the chat: each pick is a bubble from the GM
+    who made it (round tag + selection + quip), rival reactions inline beneath."""
+    if not picks:
+        return "<p class='empty'>No draft on record yet.</p>"
+    bios = bios or {}
+    items = []
+    for c in picks:
+        who, msg = c["who"], c["msg"]
+        kind = c["kind"] or ""
+        chip = (f"<span class='chip' style='background:hsl({_hue(who)} 72% 40%)'>"
+                f"{_esc(_initials(who))}</span>")
+        tid = c.get("team_id")
+        if tid in bios:
+            name = (f"<a class='who namelink' href='#bio-{tid}' "
+                    f"title='View bio'>{_esc(who)}</a>")
+        else:
+            name = f"<span class='who'>{_esc(who)}</span>"
+        if kind == "draft":
+            # Stored as 'R1.1 {who} selects Player (POS) - "quip"'. The round tag
+            # and author both go in the byline, so strip that prefix off the line.
+            tag = msg.split(" ", 1)[0] if msg[:1] == "R" else ""
+            marker = f"{tag} {who} selects "
+            body = msg[len(marker):] if tag and msg.startswith(marker) else msg
+            meta = f"<span class='dtag'>{_esc(tag)}</span>" if tag else ""
+            items.append(
+                f"<li class='msg pick'>{chip}<div class='bubble'>"
+                f"<div class='byline'>{name}{meta}</div>"
+                f"<span class='line'>{_esc(body)}</span></div></li>")
+        else:
+            items.append(
+                f"<li class='msg reax'>{chip}<div class='bubble'>"
+                f"<div class='byline'>{name}<span class='ts'>reacts</span></div>"
+                f"<span class='line'>{_esc(msg)}</span></div></li>")
+    return "<ul class='chat draft'>" + "".join(items) + "</ul>"
+
+
 def _bio_modals(bios) -> str:
     """Hidden bio cards, one per GM with a bio, revealed via :target when a chat
     name is clicked. A backdrop link and a × close both clear the hash."""
@@ -663,6 +720,23 @@ thead th.l{text-align:left}
 /* Chat -- a prominent, full-width section right under the standings. */
 .eyebrow.big{font-size:14px;padding:5px 12px}
 .chatwrap .card{border-width:2px}
+.chathead{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  flex-wrap:wrap;margin:0 0 12px}
+.chathead .eyebrow{margin:0}
+.viewbtn{cursor:pointer;user-select:none;white-space:nowrap;
+  font:600 12px/1 'Oswald',sans-serif;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--accent-ink);background:var(--accent);border:2px solid var(--line);
+  padding:6px 12px}
+.viewbtn:hover{filter:brightness(1.06)}
+.view-draft{display:none}
+.chathead .lbl-draft{display:none}
+#draftview:checked ~ .view-chat{display:none}
+#draftview:checked ~ .view-draft{display:block}
+#draftview:checked ~ .chathead .lbl-chat{display:none}
+#draftview:checked ~ .chathead .lbl-draft{display:inline}
+.chat.draft .msg.reax{background:var(--surface-2)}
+.dtag{font:700 11px/1 'Oswald',sans-serif;color:var(--accent);letter-spacing:.03em;
+  font-variant-numeric:tabular-nums}
 .chat{list-style:none;margin:0;padding:4px 0;max-height:560px;overflow-y:auto}
 .chat li{border-bottom:1px solid var(--line)}
 .chat li:last-child{border-bottom:0}
@@ -741,6 +815,7 @@ def render(conn: sqlite3.Connection) -> str:
     fa_week = next_week or (shown_week + 1)
     free_agents = _free_agents(conn, season, fa_week)
     chat = _recent_chat(conn)
+    draft = _draft_chat(conn)
     # GM bio cards, opened by clicking a name in chat.
     bios = {r["team_id"]: {"gm": r["gm_name"], "team": r["team_name"],
                            "bio": r["bio"]}
@@ -799,8 +874,13 @@ def render(conn: sqlite3.Connection) -> str:
   </section>
 
   <section class="chatwrap">
-    <p class="eyebrow big">League chat</p>
-    <div class="card">{_chat_feed(chat, bios)}</div>
+    <input type="checkbox" id="draftview" hidden>
+    <div class="chathead">
+      <p class="eyebrow big"><span class="lbl-chat">League chat</span><span class="lbl-draft">Draft board</span></p>
+      <label class="viewbtn" for="draftview"><span class="lbl-chat">View draft &rarr;</span><span class="lbl-draft">&larr; View chat</span></label>
+    </div>
+    <div class="card view-chat">{_chat_feed(chat, bios)}</div>
+    <div class="card view-draft">{_draft_feed(draft, bios)}</div>
   </section>
 {_upcoming_section(upcoming, next_week)}
 {weeks_html}
