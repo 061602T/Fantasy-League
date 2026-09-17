@@ -254,7 +254,8 @@ def _odds_cell(pct) -> str:
     return f"<td class='num {cls}'>{txt}</td>"
 
 
-def _standings_rows(rows, odds=None):
+def _standings_rows(rows, odds=None, bios=None):
+    bios = bios or {}
     out = []
     for i, r in enumerate(rows, 1):
         lead = " leader" if i == 1 else ""
@@ -262,11 +263,21 @@ def _standings_rows(rows, odds=None):
         odds_cell = ""
         if odds is not None:
             odds_cell = _odds_cell(odds.get(r["team_id"], 0.0) * 100)
+        # The GM's name links to their bio card when they have one, with a small
+        # "bio" button beside it.
+        if r["team_id"] in bios:
+            gm = (f"<span class='gmrow'>"
+                  f"<a class='gm namelink' href='#bio-{r['team_id']}' "
+                  f"title='View bio'>{_esc(r['gm_name'])}</a>"
+                  f"<a class='biobtn' href='#bio-{r['team_id']}' "
+                  f"title='View bio'>bio</a></span>")
+        else:
+            gm = f"<span class='gm'>{_esc(r['gm_name'])}</span>"
         out.append(
             f"<tr class='row{lead}'>"
             f"<td class='rank'>{i}</td>"
             f"<td class='team'><span class='tname'>{_esc(r['team_name'])}</span>"
-            f"<span class='gm'>{_esc(r['gm_name'])}</span></td>"
+            f"{gm}</td>"
             f"<td class='num rec'>{rec}</td>"
             f"<td class='num'>{r['points_for']:.1f}</td>"
             f"<td class='num muted'>{r['points_against']:.1f}</td>"
@@ -587,56 +598,87 @@ def _draft_feed(picks, bios=None):
 _SLOT_ORDER = {"QB": 0, "RB": 1, "WR": 2, "TE": 3, "FLEX": 4, "K": 5, "DST": 6}
 
 
-def _box_score(conn, week, team_id, season):
-    """A team's starters for a week with each one's fantasy points, in lineup
-    order. Points come from player_weekly_scores; the sum is the team's total."""
+def _box_score(conn, week, team_id, season, bye_teams):
+    """A team's full lineup for a week -- starters and bench -- each with their
+    recent-form projection and actual fantasy points. Starters (non-BENCH) sort
+    by slot; the bench follows, by points. A player on an NFL bye projects 0."""
     rows = conn.execute(
-        """SELECT l.slot, p.name, p.position, s.fantasy_points AS pts
+        """SELECT l.slot, l.player_id, p.name, p.position, p.nfl_team,
+                  s.fantasy_points AS pts
              FROM lineups l
              JOIN players p ON p.player_id = l.player_id
              LEFT JOIN player_weekly_scores s
                ON s.player_id = l.player_id AND s.season = ? AND s.week = ?
-            WHERE l.team_id = ? AND l.week = ? AND l.slot != 'BENCH'""",
+            WHERE l.team_id = ? AND l.week = ?""",
         (season, week, team_id, week)).fetchall()
-    items = [{"slot": r["slot"], "name": r["name"], "pos": r["position"],
-              "pts": r["pts"]} for r in rows]
-    items.sort(key=lambda x: (_SLOT_ORDER.get(x["slot"], 9), -(x["pts"] or 0.0)))
-    return items
+    out = []
+    for r in rows:
+        on_bye = r["nfl_team"] in bye_teams
+        proj = 0.0 if on_bye else scoreproj.project_player(
+            conn, r["player_id"], season, week)
+        out.append({"slot": r["slot"], "name": r["name"], "pos": r["position"],
+                    "pts": r["pts"], "proj": proj, "bye": on_bye})
+    out.sort(key=lambda x: (_SLOT_ORDER.get(x["slot"], 9), -(x["pts"] or 0.0)))
+    return out
 
 
 def _box_modals(conn, season) -> str:
     """Hidden per-matchup box scores for every scored game, revealed via :target
-    when its card is clicked (backdrop / × close). One modal per final matchup."""
+    when its card is clicked (backdrop / × close). One modal per final matchup;
+    each side shows starters + bench with projected vs actual points."""
     names = {r["team_id"]: r["team_name"]
              for r in conn.execute("SELECT team_id, team_name FROM teams")}
     finals = conn.execute(
         """SELECT matchup_id, week, home_team_id, away_team_id, home_points,
                   away_points, winner_team_id FROM matchups
             WHERE status = 'final' ORDER BY week DESC, matchup_id""").fetchall()
+    bye_cache = {}
+
+    def _rows_html(items):
+        lis = []
+        for b in items:
+            if b["bye"]:
+                proj = "BYE"
+            elif b["proj"] is not None:
+                proj = f"{b['proj']:.1f}"
+            else:
+                proj = "&ndash;"
+            pts = f"{b['pts']:.1f}" if b["pts"] is not None else "&ndash;"
+            lis.append(
+                f"<li class='boxrow'><span class='bslot'>{_esc(b['slot'])}</span>"
+                f"<span class='bname'>{_esc(b['name'])} "
+                f"<span class='bpos'>{_esc(b['pos'])}</span></span>"
+                f"<span class='bproj'>{proj}</span>"
+                f"<span class='bpts'>{pts}</span></li>")
+        return "".join(lis)
 
     def _col(tid, pts, won):
-        rows = _box_score(conn, m["week"], tid, season)
-        lis = "".join(
-            f"<li class='boxrow'><span class='bslot'>{_esc(b['slot'])}</span>"
-            f"<span class='bname'>{_esc(b['name'])} "
-            f"<span class='bpos'>{_esc(b['pos'])}</span></span>"
-            f"<span class='bpts'>"
-            f"{('%.1f' % b['pts']) if b['pts'] is not None else '&ndash;'}</span></li>"
-            for b in rows)
-        if not lis:
-            lis = ("<li class='boxrow'><span class='bname'>No lineup recorded "
-                   "for this week.</span></li>")
+        box = _box_score(conn, m["week"], tid, season, bye)
+        starters = [b for b in box if b["slot"] != "BENCH"]
+        bench = [b for b in box if b["slot"] == "BENCH"]
+        proj_total = sum((b["proj"] or 0.0) for b in starters if not b["bye"])
+        starter_html = _rows_html(starters) or (
+            "<li class='boxrow'><span class='bname'>No lineup recorded.</span></li>")
+        bench_html = (f"<div class='boxsub'>Bench</div>"
+                      f"<ul class='boxlist'>{_rows_html(bench)}</ul>") if bench else ""
         wc = " won" if won else ""
-        return (f"<div class='boxcol'><div class='boxteam{wc}'>"
-                f"<span>{_esc(names.get(tid, '?'))}</span>"
-                f"<span class='boxtot'>{pts:.1f}</span></div>"
-                f"<ul class='boxlist'>{lis}</ul></div>")
+        return (f"<div class='boxcol'>"
+                f"<div class='boxteam{wc}'><span>{_esc(names.get(tid, '?'))}</span>"
+                f"<span class='boxtot'>{pts:.1f}"
+                f"<span class='boxproj'>proj {proj_total:.1f}</span></span></div>"
+                f"<div class='boxhead'><span class='bslot'></span>"
+                f"<span class='bname'></span><span class='bproj'>PROJ</span>"
+                f"<span class='bpts'>PTS</span></div>"
+                f"<ul class='boxlist'>{starter_html}</ul>{bench_html}</div>")
 
     mods = []
     for m in finals:
         h, a = m["home_team_id"], m["away_team_id"]
         hp = m["home_points"] if m["home_points"] is not None else 0.0
         ap = m["away_points"] if m["away_points"] is not None else 0.0
+        bye = bye_cache.get(m["week"])
+        if bye is None:
+            bye = bye_cache[m["week"]] = scoreproj.teams_on_bye(season, m["week"])
         mods.append(
             f"<div class='biomodal boxmodal' id='box-{m['matchup_id']}'>"
             f"<a class='biobackdrop' href='#'></a>"
@@ -732,6 +774,12 @@ thead th.l{text-align:left}
 .team{text-align:left!important;display:flex;flex-direction:column;line-height:1.25}
 .tname{font-weight:700}
 .gm{font-size:12px;color:var(--muted)}
+.gmrow{display:flex;align-items:center;gap:7px}
+a.gm.namelink{color:var(--muted)}
+.biobtn{font:700 9.5px/1 "Oswald",sans-serif;letter-spacing:.05em;
+  text-transform:uppercase;color:var(--accent-ink);background:var(--accent);
+  border:1.5px solid var(--line);padding:2px 5px;text-decoration:none;white-space:nowrap}
+.biobtn:hover{filter:brightness(1.06)}
 .rec{font-weight:700}
 .faab{color:var(--accent);font-weight:700}
 .odds{font-weight:700}
@@ -760,7 +808,14 @@ thead th.l{text-align:left}
   color:var(--muted);text-transform:uppercase}
 .bname{flex:1;min-width:0;overflow-wrap:anywhere}
 .bpos{font-size:10px;color:var(--muted);font-weight:600}
-.bpts{font-weight:700;font-variant-numeric:tabular-nums}
+.bproj{flex:0 0 40px;text-align:right;color:var(--muted);font-weight:600;
+  font-variant-numeric:tabular-nums}
+.bpts{flex:0 0 40px;text-align:right;font-weight:700;font-variant-numeric:tabular-nums}
+.boxhead{display:flex;gap:9px;padding:2px 0 3px;font-size:9.5px;font-weight:700;
+  letter-spacing:.05em;color:var(--muted);text-transform:uppercase}
+.boxsub{font:700 11px/1 "Oswald",sans-serif;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--muted);margin:10px 0 4px}
+.boxproj{margin-left:8px;font-size:11px;color:var(--muted);font-weight:600}
 .side{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:4px 0}
 .side .sname{font-weight:600}
 .side .sbox{display:flex;flex-direction:column;align-items:flex-end;line-height:1.05}
@@ -1077,7 +1132,7 @@ def render(conn: sqlite3.Connection) -> str:
           <th class="l">#</th><th class="l">Team</th><th>Rec</th>
           <th>PF</th><th>PA</th><th>FAAB</th>{"<th>Playoff%</th>" if odds else ""}
         </tr></thead>
-        <tbody>{_standings_rows(standings, odds)}</tbody>
+        <tbody>{_standings_rows(standings, odds, bios)}</tbody>
       </table>
     </div>
     {'<p class="mnote">Playoff% = share of 10,000 rest-of-season simulations '
