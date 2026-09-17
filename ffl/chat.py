@@ -18,7 +18,7 @@ import random as _random
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-from . import config, llm
+from . import config, llm, worldcontext
 
 
 def _team(conn, tid):
@@ -89,7 +89,7 @@ def _compose(conn, team, headline, detail, involvement, recent) -> str | None:
             f"Your angle: {involvement or 'not directly involved'}\n"
             f"The other GMs (their quirks are fair game to roast):\n"
             f"{_roast_material(conn, team['team_id'])}\n\n"
-            f"Recent chat:\n{recent}\n\n"
+            f"Recent chat:\n{recent}{worldcontext.prompt_snippet()}\n\n"
             "Post your reaction (gloat, trash-talk, roast someone, make "
             'excuses, joke -- whatever fits you). Return JSON {"message": '
             '"<your post>"}.')
@@ -227,8 +227,9 @@ def _ambient_line(conn, team, recent, mode) -> str | None:
               f"Chattiness: {team['chattiness']}. Write ONE short line like a real "
               f"person in a group chat -- no narration, no quotation marks."
               + llm.VOICE)
+    world = worldcontext.prompt_snippet()
     if mode == "reply":
-        user = (f"The league group chat, most recent last:\n{recent}\n\n"
+        user = (f"The league group chat, most recent last:\n{recent}{world}\n\n"
                 "Reply to what was just said. React to the SPECIFIC thing they "
                 "said -- fire back, pile on, or clown it -- so it reads as a real "
                 "back-and-forth, not a new topic. One line. "
@@ -236,7 +237,7 @@ def _ambient_line(conn, team, recent, mode) -> str | None:
     else:
         user = (f"The chat's been quiet. Recent chat (may be stale):\n{recent}\n\n"
                 f"The other GMs (fair game to poke):\n"
-                f"{_roast_material(conn, team['team_id'])}\n\n"
+                f"{_roast_material(conn, team['team_id'])}{world}\n\n"
                 "Open something new -- a hot take, a brag, a shot at a rival, a "
                 "gripe about your own team, a random football thought. NOT a reply "
                 'to anything specific. One line. Return JSON {"message": "<post>"}.')

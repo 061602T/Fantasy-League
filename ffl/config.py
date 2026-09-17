@@ -66,6 +66,24 @@ CHAT_TICK_PROB = float(os.environ.get("FFL_CHAT_TICK_PROB", "0.4"))
 CHAT_TICK_COOLDOWN = int(os.environ.get("FFL_CHAT_TICK_COOLDOWN", "360"))
 CHAT_TICK_THREAD_PROB = float(os.environ.get("FFL_CHAT_TICK_THREAD_PROB", "0.65"))
 
+# --- Real-world context for chat (scripts/refresh_context.py) --------------
+# A separate, infrequent job (cron'd ~every 4h) web-searches current NFL news
+# and general pop-culture/news via the Anthropic server-side web_search tool and
+# caches a handful of short bullets to CONTEXT_PATH. The chat paths read them as
+# OPTIONAL flavor a GM can occasionally reference -- never required, never
+# blocking. Missing / stale / unreadable cache -> chat just runs league-only.
+CONTEXT_PATH = os.environ.get(
+    "FFL_CONTEXT_PATH",
+    os.path.expanduser(os.path.join("~", "ffl-data", "world_context.json")))
+# Ignore a cache older than this so the GMs don't reference stale "current
+# events" if the refresh job has been failing.
+CONTEXT_MAX_AGE_HOURS = float(os.environ.get("FFL_CONTEXT_MAX_AGE_HOURS", "24"))
+# Per-message chance the cached context is even shown to the model. Kept well
+# below 1 so most messages are league-only regardless of what the model does
+# with it; of the messages that DO see it, the prompt still says to reference it
+# only rarely. Net effect: an occasional real-world aside, not a news crawl.
+CONTEXT_INJECT_PROB = float(os.environ.get("FFL_CONTEXT_INJECT_PROB", "0.35"))
+
 # --- Draft-day chatter -----------------------------------------------------
 # Per-pick probability that a notable pick draws live reactions from a few
 # rival GMs (a reach, a steal, or grabbing a position a rival also needs).
