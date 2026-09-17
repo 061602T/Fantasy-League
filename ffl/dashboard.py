@@ -494,9 +494,9 @@ _CSS = """
   --win:#0f6b0f; --loss:#b21212; --gold:#7a5c00;
 }
 @media (prefers-color-scheme: dark){:root{
-  --bg:#0a0700; --surface:#151000; --surface-2:#201800; --ink:#f2dca4;
-  --muted:#c19a44; --line:#f2dca4; --accent:#ff7d1a; --accent-ink:#0a0700;
-  --win:#54e054; --loss:#ff6060; --gold:#ffcf4a;
+  --bg:#2b1f11; --surface:#372817; --surface-2:#44331d; --ink:#f5e2b0;
+  --muted:#cbaa64; --line:#f5e2b0; --accent:#ff7d1a; --accent-ink:#2b1f11;
+  --win:#6fdd6f; --loss:#ff7a7a; --gold:#ffcf4a;
 }}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
