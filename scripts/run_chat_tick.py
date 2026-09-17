@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ffl import config, db
+from ffl import config, dashboard, db, ghpages
 from ffl import chat as chatmod
 
 
@@ -41,6 +41,9 @@ def main():
     ap.add_argument("--force", action="store_true",
                     help="bypass the cooldown and probability pre-gate (still "
                          "runs the Haiku gate); for testing the wiring")
+    ap.add_argument("--no-publish", action="store_true",
+                    help="don't refresh/publish the dashboard after posting "
+                         "(chat still writes to the DB)")
     args = ap.parse_args()
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
 
@@ -75,6 +78,24 @@ def main():
     print(f"[{stamp}] posted {len(posted)} message(s):")
     for p in posted:
         print(f"    {p['ts'].strftime('%H:%M:%S')} {p['gm_name']}: {p['message']}")
+
+    # New chat happened, so refresh the live dashboard and push it to GitHub
+    # Pages -- this is what keeps the public link current with the conversation
+    # between the hourly scoring ticks. Only runs when something was actually
+    # posted (idle firings stay light), never crashes the loop, and publish() is
+    # a no-op when Pages isn't configured or the file is unchanged.
+    if not args.no_publish:
+        try:
+            dash = dashboard.write(conn)
+            pub = ghpages.publish(dash)
+            if pub["status"] == "published":
+                print(f"    dashboard published to GitHub Pages")
+            elif pub["status"] == "error":
+                print(f"    WARNING: dashboard publish failed: {pub['error']}",
+                      file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 -- publishing must not crash the loop
+            print(f"    WARNING: dashboard refresh/publish failed: {e}",
+                  file=sys.stderr)
     return 0
 
 
