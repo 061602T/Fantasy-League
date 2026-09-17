@@ -84,6 +84,23 @@ CONTEXT_MAX_AGE_HOURS = float(os.environ.get("FFL_CONTEXT_MAX_AGE_HOURS", "24"))
 # only rarely. Net effect: an occasional real-world aside, not a news crawl.
 CONTEXT_INJECT_PROB = float(os.environ.get("FFL_CONTEXT_INJECT_PROB", "0.35"))
 
+# --- Governance: GM-proposed bylaws (free-form) ----------------------------
+# GMs can propose free-text bylaws/punishments, discuss, and vote in character.
+# A passed vote NEVER auto-executes: it lands in 'passed_pending' for the
+# commissioner (you) to enact via scripts/review_bylaws.py -- either as displayed
+# lore (text only) or as ONE bounded mechanical effect (ffl/effects.py). None of
+# this is wired into the live tick loop yet; that is a separate, reviewed step.
+GOV_VOTING_WINDOW_HOURS = float(os.environ.get("FFL_GOV_WINDOW_HOURS", "6"))
+GOV_QUORUM = int(os.environ.get("FFL_GOV_QUORUM", "4"))   # min yes/no votes to be valid
+GOV_PROPOSE_PROB = float(os.environ.get("FFL_GOV_PROPOSE_PROB", "0.05"))  # per-tick, pre-gate
+GOV_TITLE_MAX = 120        # chars, sanitized
+GOV_TEXT_MAX = 600         # chars, sanitized (pitch / rationale)
+# Bounded effects toolbox (the commissioner's mechanical enactment options):
+GOV_FAAB_MAX_DELTA = 50    # |delta| per faab_adjust; result clamped to [0, max(cap, current)]
+GOV_FREEZE_MAX_WEEKS = 3   # trade_freeze duration cap
+GOV_BACKSEAT_MAX_WEEKS = 3 # waiver_backseat duration cap
+GOV_LOSER_LABEL_MAX = 80   # loser_flag label chars, sanitized
+
 # --- Draft-day chatter -----------------------------------------------------
 # Per-pick probability that a notable pick draws live reactions from a few
 # rival GMs (a reach, a steal, or grabbing a position a rival also needs).

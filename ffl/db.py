@@ -141,6 +141,48 @@ CREATE TABLE IF NOT EXISTS chat_log (
     reply_to    INTEGER REFERENCES chat_log(chat_id),  -- the message this replies to
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+-- Governance tables (bylaws / votes / team_effects) are created idempotently in
+-- _migrate() via _GOVERNANCE_DDL, so both fresh and existing databases get them.
+"""
+
+
+# Free-form GM governance (ffl/governance.py, ffl/effects.py). Created on every
+# connect() so an existing live DB picks the tables up without a re-init. FK
+# references to teams/bylaws are fine at CREATE time (SQLite enforces FKs only on
+# row writes), so ordering vs. the main SCHEMA doesn't matter.
+_GOVERNANCE_DDL = """
+CREATE TABLE IF NOT EXISTS bylaws (
+    bylaw_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposer_team_id INTEGER REFERENCES teams(team_id),
+    title            TEXT NOT NULL,
+    rationale        TEXT,
+    -- voting | passed_pending | rejected_vote | enacted_lore | enacted_effect
+    --   | rejected_admin | expired
+    status           TEXT NOT NULL,
+    votes_open_at    TEXT NOT NULL,
+    votes_close_at   TEXT NOT NULL,
+    tally_json       TEXT,          -- {yes,no,abstain,cast,...} captured at close
+    enacted_json     TEXT,          -- how the commissioner enacted it (lore/effect/rejected)
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at      TEXT
+);
+CREATE TABLE IF NOT EXISTS bylaw_votes (
+    bylaw_id   INTEGER NOT NULL REFERENCES bylaws(bylaw_id),
+    team_id    INTEGER NOT NULL REFERENCES teams(team_id),
+    vote       TEXT NOT NULL,       -- yes | no | abstain
+    message    TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (bylaw_id, team_id)
+);
+CREATE TABLE IF NOT EXISTS team_effects (
+    effect_id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id             INTEGER NOT NULL REFERENCES teams(team_id),
+    effect_type         TEXT NOT NULL,  -- trade_freeze | waiver_backseat | loser_flag
+    params_json         TEXT NOT NULL,
+    active_through_week  INTEGER,        -- last week it applies (NULL = season-long / display)
+    bylaw_id            INTEGER REFERENCES bylaws(bylaw_id),
+    created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -185,6 +227,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+    # New tables (governance) are additive too -- create any that are missing.
+    conn.executescript(_GOVERNANCE_DDL)
     conn.commit()
 
 
