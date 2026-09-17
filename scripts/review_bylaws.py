@@ -7,6 +7,11 @@ ways, or reject it. Nothing touches game state until you run an enact command.
 List (default -- shows open votes, pending approvals, and standing lore):
     python -m scripts.review_bylaws
 
+Approve with teeth in ONE command -- the model picks the single best bounded
+effect from the whitelist and applies it (add --dry-run to preview first):
+    python -m scripts.review_bylaws --auto 7
+    python -m scripts.review_bylaws --auto 7 --dry-run
+
 Enact a passed bylaw as a standing, display-only league rule (option B):
     python -m scripts.review_bylaws --lore 7
 
@@ -65,11 +70,13 @@ def _print_list(conn):
               f"(voted {t.get('yes','?')}-{t.get('no','?')}, "
               f"by {_team_name(conn, b['proposer_team_id'])})")
         print(f"       pitch: {b['rationale']}")
-        print(f"       enact as lore:   review_bylaws --lore {b['bylaw_id']}")
-        print(f"       enact an effect: review_bylaws --effect {b['bylaw_id']} "
+        print(f"       approve w/ teeth: review_bylaws --auto {b['bylaw_id']}"
+              f"   (model picks the effect; add --dry-run to preview)")
+        print(f"       enact as lore:    review_bylaws --lore {b['bylaw_id']}")
+        print(f"       effect by hand:   review_bylaws --effect {b['bylaw_id']} "
               f"--type <faab_adjust|trade_freeze|waiver_backseat|loser_flag> "
               f"--team \"<name>\" ...")
-        print(f"       reject:          review_bylaws --reject {b['bylaw_id']} "
+        print(f"       reject:           review_bylaws --reject {b['bylaw_id']} "
               f"--reason \"...\"")
 
     print("\n=== Standing league rules (enacted as lore) ===")
@@ -92,6 +99,12 @@ def main():
     ap.add_argument("--delta", type=int, help="faab_adjust delta (with --effect)")
     ap.add_argument("--weeks", type=int, help="freeze/backseat weeks (with --effect)")
     ap.add_argument("--label", help="loser_flag label (with --effect)")
+    ap.add_argument("--auto", type=int, metavar="ID",
+                    help="approve bylaw ID and let the model pick + apply the "
+                         "single best bounded effect (still validated)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="with --auto, show the effect it would apply without "
+                         "changing anything")
     ap.add_argument("--reject", type=int, metavar="ID", help="reject bylaw ID")
     ap.add_argument("--reason", default="", help="reason (with --reject)")
     args = ap.parse_args()
@@ -101,10 +114,18 @@ def main():
         return 1
     conn = db.connect(args.db)
 
-    chosen = [x for x in (args.lore, args.effect, args.reject) if x is not None]
+    chosen = [x for x in (args.lore, args.effect, args.auto, args.reject)
+              if x is not None]
     if len(chosen) > 1:
-        print("Choose only one of --lore / --effect / --reject.", file=sys.stderr)
+        print("Choose only one of --lore / --effect / --auto / --reject.",
+              file=sys.stderr)
         return 2
+
+    if args.auto is not None:
+        ok, msg = governance.enact_auto(conn, args.auto, dry_run=args.dry_run)
+        print(msg if ok else f"error: {msg}",
+              file=sys.stdout if ok else sys.stderr)
+        return 0 if ok else 1
 
     if args.lore is not None:
         ok, msg = governance.enact_lore(conn, args.lore)

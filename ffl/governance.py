@@ -345,3 +345,86 @@ def reject(conn, bylaw_id, reason="", *, now=None) -> tuple[bool, str]:
     conn.commit()
     _log(conn, None, f'[BYLAW #{bylaw_id} REJECTED by commissioner] "{b["title"]}"')
     return True, f"bylaw #{bylaw_id} rejected"
+
+
+# --- one-command enactment: let the model pick the bounded effect -----------
+
+def _effect_menu() -> str:
+    return (
+        "Choose exactly ONE of these bounded effects (nothing else exists):\n"
+        f"- faab_adjust: change a team's FAAB budget. param delta = integer "
+        f"from -{int(config.GOV_FAAB_MAX_DELTA)} to {int(config.GOV_FAAB_MAX_DELTA)}, "
+        "non-zero (negative = a penalty).\n"
+        f"- trade_freeze: bar a team from trading. param weeks = 1 to "
+        f"{config.GOV_FREEZE_MAX_WEEKS}.\n"
+        f"- waiver_backseat: send a team to the back of every waiver tie. param "
+        f"weeks = 1 to {config.GOV_BACKSEAT_MAX_WEEKS}.\n"
+        "- loser_flag: a display-only punishment label. param label = short text.")
+
+
+def suggest_effect(conn, bylaw) -> dict | None:
+    """Ask the model to translate a passed free-form bylaw into ONE bounded
+    effect: {effect_type, team, params, reason}. Constrained to the whitelist;
+    returns None if it can't produce a usable choice. Parameters are still
+    re-validated by the caller before anything applies."""
+    teams = ", ".join(r["team_name"] for r in conn.execute(
+        "SELECT team_name FROM teams ORDER BY draft_slot"))
+    system = ("You are the commissioner's assistant. A league bylaw has PASSED a "
+              "vote; translate it into the single bounded penalty that best "
+              "carries out its intent. You may only pick from the fixed menu and "
+              "must stay within the stated bounds. Answer only JSON.")
+    user = (f'Passed bylaw: "{bylaw["title"]}"\nPitch: {bylaw["rationale"]}\n\n'
+            f"Teams: {teams}\n\n{_effect_menu()}\n\n"
+            "Pick the effect, the target team (exact name from the list), and its "
+            'parameter. Return JSON {"effect_type": "...", "team": "<team name>", '
+            '"delta": <int or null>, "weeks": <int or null>, '
+            '"label": "<text or null>", "reason": "<one short line>"}.')
+    try:
+        data = llm.chat_json(system, user, max_tokens=400)
+    except (ValueError, TypeError):
+        return None
+    et = str(data.get("effect_type", "")).strip()
+    if et not in effects.EFFECTS:
+        return None
+    params = {}
+    if data.get("delta") is not None:
+        try:
+            params["delta"] = int(data["delta"])
+        except (TypeError, ValueError):
+            return None
+    if data.get("weeks") is not None:
+        try:
+            params["weeks"] = int(data["weeks"])
+        except (TypeError, ValueError):
+            return None
+    if data.get("label"):
+        params["label"] = str(data["label"])
+    return {"effect_type": et, "team": str(data.get("team", "")).strip(),
+            "params": params, "reason": str(data.get("reason", "")).strip()}
+
+
+def enact_auto(conn, bylaw_id, *, dry_run=False, now=None) -> tuple[bool, str]:
+    """One-step 'yes, with teeth': translate a passed bylaw into a bounded effect
+    and apply it. On dry_run, report the plan without changing anything. Any
+    failure to map or validate is reported so the commissioner can fall back to
+    the explicit `enact_effect` path -- nothing partial is written."""
+    b = _require_pending(conn, bylaw_id)
+    if b is None:
+        return False, f"bylaw #{bylaw_id} is not pending approval"
+    sug = suggest_effect(conn, dict(b))
+    if not sug:
+        return False, ("couldn't map this bylaw to a bounded effect -- enact it "
+                       "manually with --effect")
+    tid = effects.team_id_by_name(conn, sug["team"])
+    if tid is None:
+        return False, (f"suggested team {sug['team']!r} isn't in the league -- "
+                       "enact manually with --effect")
+    ok, err = effects.validate_effect(conn, sug["effect_type"], tid, sug["params"])
+    if not ok:
+        return False, f"suggested effect didn't validate ({err}) -- use --effect"
+    plan = (f"{sug['effect_type']} on {sug['team']} {sug['params']}"
+            + (f" ({sug['reason']})" if sug["reason"] else ""))
+    if dry_run:
+        return True, f"[dry run] would enact: {plan}"
+    return enact_effect(conn, bylaw_id, sug["effect_type"], tid, sug["params"],
+                        now=now)

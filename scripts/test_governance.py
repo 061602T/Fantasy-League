@@ -207,6 +207,46 @@ def test_reject():
     print("ok: commissioner reject -> rejected_admin")
 
 
+def test_enact_auto():
+    conn = _seed()
+    bid = _passed_bylaw(conn)
+    conn.execute("UPDATE teams SET faab_remaining=80 WHERE team_id=2")
+    # Stub the model's translation to a bounded effect.
+    governance.suggest_effect = lambda conn, b: {
+        "effect_type": "faab_adjust", "team": "Team 2",
+        "params": {"delta": -20}, "reason": "tax the hoarder"}
+    # dry-run changes nothing.
+    ok, msg = governance.enact_auto(conn, bid, dry_run=True)
+    assert ok and "dry run" in msg
+    assert conn.execute("SELECT faab_remaining FROM teams WHERE team_id=2"
+                        ).fetchone()[0] == 80
+    assert governance.pending(conn), "dry run should leave it pending"
+    # real run applies + records.
+    ok, summary = governance.enact_auto(conn, bid)
+    assert ok and conn.execute("SELECT faab_remaining FROM teams WHERE team_id=2"
+                               ).fetchone()[0] == 60, summary
+    assert conn.execute("SELECT status FROM bylaws WHERE bylaw_id=?",
+                        (bid,)).fetchone()[0] == "enacted_effect"
+    print("ok: --auto maps a bylaw to a bounded effect (dry-run safe, then applies)")
+
+
+def test_enact_auto_bad_suggestion_refused():
+    conn = _seed()
+    bid = _passed_bylaw(conn)
+    # An out-of-bounds or unknown suggestion must not apply anything.
+    governance.suggest_effect = lambda conn, b: {
+        "effect_type": "faab_adjust", "team": "Team 2",
+        "params": {"delta": 999}, "reason": "too much"}
+    ok, msg = governance.enact_auto(conn, bid)
+    assert not ok and "validate" in msg, msg
+    assert governance.pending(conn)[0]["bylaw_id"] == bid, "must stay pending"
+    # A None suggestion (model couldn't map it) also refuses cleanly.
+    governance.suggest_effect = lambda conn, b: None
+    ok, msg = governance.enact_auto(conn, bid)
+    assert not ok and "couldn't map" in msg
+    print("ok: --auto refuses an invalid/unmappable suggestion, leaves it pending")
+
+
 # --- phase 1: tick wiring ---------------------------------------------------
 
 def test_tick_step_proposes_then_votes():
@@ -281,6 +321,8 @@ def main():
     test_enact_effect()
     test_enact_effect_out_of_bounds_refused()
     test_reject()
+    test_enact_auto()
+    test_enact_auto_bad_suggestion_refused()
     test_tick_step_proposes_then_votes()
     test_tick_step_never_raises()
     test_active_window_and_freeze_blocks_trades()
