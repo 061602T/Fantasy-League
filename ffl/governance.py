@@ -403,6 +403,52 @@ def suggest_effect(conn, bylaw) -> dict | None:
             "params": params, "reason": str(data.get("reason", "")).strip()}
 
 
+_DRAFT_BRIEF = """Implement a new bounded governance effect for the AI Fantasy \
+Football League so this passed bylaw can be enacted. Open a pull request; do NOT \
+deploy or merge -- the commissioner reviews and merges.
+
+BYLAW #{id}: "{title}"
+Pitch: {pitch}
+
+The league has a whitelist of bounded effects in ffl/effects.py (faab_adjust, \
+trade_freeze, waiver_backseat, loser_flag). Each has a validate fn (_v_*, returns \
+(ok, err)) and an apply fn (_a_*, mutates state or records a row in team_effects \
+and returns a one-line summary), both registered in the EFFECTS dict; bounds live \
+in ffl/config.py (GOV_*), and offline tests live in scripts/test_governance.py. \
+Add ONE new effect that carries out this bylaw's intent, following that pattern \
+exactly:
+
+1. ffl/config.py -- add any bound constants (GOV_*, env-overridable), matching \
+the style of the existing governance config block.
+2. ffl/effects.py -- add _v_<name> and _a_<name>, register them in EFFECTS. A \
+duration effect records a team_effects row with active_through_week; its \
+enforcement hook (e.g. in ffl/market.py for trades/waivers) reads it via \
+effects.active_team_ids. Keep it strictly bounded and validated -- no free-form \
+execution, no arbitrary SQL.
+3. scripts/review_bylaws.py -- add the new --type choice and any params (--delta \
+/ --weeks / --label style), and mention it in the effects list in the docstring.
+4. scripts/test_governance.py -- add bounds tests (reject out-of-range, apply \
+within range) and, if there is an enforcement hook, a test that it bites.
+5. Run `python -m scripts.test_governance` and the offline suites for any file \
+you touched; all must pass.
+
+When merged and pulled on the Pi, the commissioner enacts it with:
+  python -m scripts.review_bylaws --effect {id} --type <name> --team "<team>" ...
+or, once it's in the whitelist, `--auto {id}` picks it automatically.
+"""
+
+
+def draft_brief(conn, bylaw_id) -> tuple[bool, str]:
+    """A ready-to-paste prompt for a coding agent to implement a NEW bounded
+    effect for a bylaw the existing whitelist can't express. Prints text only --
+    it drafts nothing itself; a human hands it to an agent and reviews the PR."""
+    b = conn.execute("SELECT * FROM bylaws WHERE bylaw_id=?", (bylaw_id,)).fetchone()
+    if b is None:
+        return False, f"no bylaw #{bylaw_id}"
+    return True, _DRAFT_BRIEF.format(id=bylaw_id, title=b["title"],
+                                     pitch=b["rationale"] or "")
+
+
 def enact_auto(conn, bylaw_id, *, dry_run=False, now=None) -> tuple[bool, str]:
     """One-step 'yes, with teeth': translate a passed bylaw into a bounded effect
     and apply it. On dry_run, report the plan without changing anything. Any
@@ -413,8 +459,9 @@ def enact_auto(conn, bylaw_id, *, dry_run=False, now=None) -> tuple[bool, str]:
         return False, f"bylaw #{bylaw_id} is not pending approval"
     sug = suggest_effect(conn, dict(b))
     if not sug:
-        return False, ("couldn't map this bylaw to a bounded effect -- enact it "
-                       "manually with --effect")
+        return False, ("couldn't map this bylaw to an existing effect -- enact it "
+                       "manually with --effect, or run --draft to get a brief for "
+                       "a coding agent to add a new effect")
     tid = effects.team_id_by_name(conn, sug["team"])
     if tid is None:
         return False, (f"suggested team {sug['team']!r} isn't in the league -- "

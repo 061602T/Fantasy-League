@@ -78,6 +78,8 @@ def _print_list(conn):
               f"--team \"<name>\" ...")
         print(f"       reject:           review_bylaws --reject {b['bylaw_id']} "
               f"--reason \"...\"")
+        print(f"       needs new effect: review_bylaws --draft {b['bylaw_id']}"
+              f"   (brief for a coding agent to add one)")
 
     print("\n=== Standing league rules (enacted as lore) ===")
     if not lore:
@@ -105,6 +107,10 @@ def main():
     ap.add_argument("--dry-run", action="store_true",
                     help="with --auto, show the effect it would apply without "
                          "changing anything")
+    ap.add_argument("--draft", type=int, metavar="ID",
+                    help="print a ready-to-paste brief for a coding agent to add "
+                         "a NEW bounded effect for bylaw ID (drafts nothing "
+                         "itself; you review the resulting PR)")
     ap.add_argument("--reject", type=int, metavar="ID", help="reject bylaw ID")
     ap.add_argument("--reason", default="", help="reason (with --reject)")
     args = ap.parse_args()
@@ -114,12 +120,17 @@ def main():
         return 1
     conn = db.connect(args.db)
 
-    chosen = [x for x in (args.lore, args.effect, args.auto, args.reject)
-              if x is not None]
+    chosen = [x for x in (args.lore, args.effect, args.auto, args.draft,
+                          args.reject) if x is not None]
     if len(chosen) > 1:
-        print("Choose only one of --lore / --effect / --auto / --reject.",
-              file=sys.stderr)
+        print("Choose only one action flag.", file=sys.stderr)
         return 2
+
+    if args.draft is not None:
+        ok, msg = governance.draft_brief(conn, args.draft)
+        print(msg if ok else f"error: {msg}",
+              file=sys.stdout if ok else sys.stderr)
+        return 0 if ok else 1
 
     if args.auto is not None:
         ok, msg = governance.enact_auto(conn, args.auto, dry_run=args.dry_run)

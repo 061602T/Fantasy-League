@@ -230,6 +230,21 @@ def test_enact_auto():
     print("ok: --auto maps a bylaw to a bounded effect (dry-run safe, then applies)")
 
 
+def test_draft_brief():
+    conn = _seed()
+    bid = _passed_bylaw(conn)
+    ok, brief = governance.draft_brief(conn, bid)
+    assert ok
+    # It's a paste-ready agent prompt that names the bylaw and the files/pattern.
+    title = conn.execute("SELECT title FROM bylaws WHERE bylaw_id=?",
+                         (bid,)).fetchone()[0]
+    assert title in brief and f"BYLAW #{bid}" in brief
+    assert "ffl/effects.py" in brief and "test_governance" in brief
+    assert "do NOT deploy" in brief or "do NOT" in brief
+    assert not governance.draft_brief(conn, 999)[0]      # unknown id
+    print("ok: draft_brief emits an agent prompt for a new effect")
+
+
 def test_enact_auto_bad_suggestion_refused():
     conn = _seed()
     bid = _passed_bylaw(conn)
@@ -322,6 +337,7 @@ def main():
     test_enact_effect_out_of_bounds_refused()
     test_reject()
     test_enact_auto()
+    test_draft_brief()
     test_enact_auto_bad_suggestion_refused()
     test_tick_step_proposes_then_votes()
     test_tick_step_never_raises()
