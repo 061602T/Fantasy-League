@@ -11,7 +11,9 @@ that doesn't exist.
 
 What takes effect when:
   * ``faab_adjust`` changes ``teams.faab_remaining`` immediately on enactment
-    (clamped), and ``loser_flag`` stores a display flag immediately.
+    (clamped), ``loser_flag`` stores a display flag immediately, and
+    ``late_fee`` immediately transfers a capped FAAB amount from one team to
+    an opponent (also recorded in ``team_effects`` for a weekly tally).
   * ``trade_freeze`` / ``waiver_backseat`` RECORD their state in ``team_effects``
     with an ``active_through_week``, but the enforcement hooks (skipping a frozen
     team in the trade loop, penalising a back-seated team's waiver ties) are
@@ -147,6 +149,48 @@ def _a_loser(conn, team_id, p, bylaw_id):
     return f'{t["team_name"]} loser flag: "{label}"'
 
 
+# --- effect: late_fee (immediate, capped FAAB transfer to an opponent) ------
+
+def _v_late_fee(conn, team_id, p):
+    if _team(conn, team_id) is None:
+        return False, "no such team"
+    try:
+        opp_id = int(p["opponent_id"])
+    except (KeyError, TypeError, ValueError):
+        return False, "opponent_id must be an integer team id"
+    if opp_id == team_id:
+        return False, "opponent must be a different team"
+    if _team(conn, opp_id) is None:
+        return False, "no such opponent team"
+    try:
+        amount = int(p["amount"])
+    except (KeyError, TypeError, ValueError):
+        return False, "amount must be an integer"
+    if not (1 <= amount <= config.GOV_LATE_FEE_MAX):
+        return False, f"amount must be between 1 and {config.GOV_LATE_FEE_MAX}"
+    return True, ""
+
+
+def _a_late_fee(conn, team_id, p, bylaw_id):
+    opp_id, amount = int(p["opponent_id"]), int(p["amount"])
+    t, opp = _team(conn, team_id), _team(conn, opp_id)
+    # Can't fine a team into negative FAAB -- pay what they have if less than
+    # the assessed amount (mirrors faab_adjust's no-negative floor).
+    paid = min(amount, t["faab_remaining"])
+    new_payer = t["faab_remaining"] - paid
+    conn.execute("UPDATE teams SET faab_remaining=? WHERE team_id=?",
+                (new_payer, team_id))
+    conn.execute("UPDATE teams SET faab_remaining=faab_remaining+? WHERE team_id=?",
+                (paid, opp_id))
+    conn.execute(
+        "INSERT INTO team_effects(team_id, effect_type, params_json, "
+        "active_through_week, bylaw_id) VALUES(?,?,?,?,?)",
+        (team_id, "late_fee", json.dumps({"opponent_id": opp_id, "amount": paid}),
+         None, bylaw_id))
+    return (f"{t['team_name']} pays ${paid} late fee to {opp['team_name']} "
+            f"(FAAB {t['faab_remaining']} -> {new_payer})")
+
+
 # --- registry ---------------------------------------------------------------
 
 # effect_type -> (validate(conn, team_id, params)->(ok,err),
@@ -158,6 +202,7 @@ EFFECTS = {
     "waiver_backseat": (_v_weeks(config.GOV_BACKSEAT_MAX_WEEKS),
                         _a_duration("waiver_backseat")),
     "loser_flag":      (_v_loser, _a_loser),
+    "late_fee":        (_v_late_fee, _a_late_fee),
 }
 
 

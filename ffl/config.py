@@ -106,6 +106,7 @@ GOV_FAAB_MAX_DELTA = 50    # |delta| per faab_adjust; result clamped to [0, max(
 GOV_FREEZE_MAX_WEEKS = 3   # trade_freeze duration cap
 GOV_BACKSEAT_MAX_WEEKS = 3 # waiver_backseat duration cap
 GOV_LOSER_LABEL_MAX = 80   # loser_flag label chars, sanitized
+GOV_LATE_FEE_MAX = 10      # $ per late_fee infraction; FAAB transferred to the opponent
 
 # --- Draft-day chatter -----------------------------------------------------
 # Per-pick probability that a notable pick draws live reactions from a few
