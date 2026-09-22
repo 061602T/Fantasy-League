@@ -15,11 +15,18 @@ name: Draft governance effect
 
 on:
   issues:
-    types: [opened, labeled]
+    types: [opened]
+  issue_comment:
+    types: [created]
 
 jobs:
   draft-effect:
-    if: startsWith(github.event.issue.title, '[gov-effect]')
+    # gov-effect issues on open; and a re-run when someone @claude-comments on one
+    # (used to retry a run that failed or timed out, without re-filing the issue).
+    if: >-
+      startsWith(github.event.issue.title, '[gov-effect]') &&
+      (github.event_name != 'issue_comment' ||
+       contains(github.event.comment.body, '@claude'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
