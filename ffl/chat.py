@@ -18,7 +18,7 @@ import random as _random
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-from . import config, llm, worldcontext
+from . import config, effects, llm, rosters, worldcontext
 
 
 def _team(conn, tid):
@@ -111,6 +111,9 @@ def react_to_event(conn: sqlite3.Connection, headline: str, detail: str = "",
     involvement = involvement or {}
     if team_ids is None:
         team_ids = [r["team_id"] for r in conn.execute("SELECT team_id FROM teams")]
+    # Governance chat_mute: a muted team can't post (but can still be talked about).
+    muted = effects.active_team_ids(conn, "chat_mute", rosters.current_week(conn))
+    team_ids = [t for t in team_ids if t not in muted]
 
     posted = []
     for _ in range(rounds):
@@ -261,7 +264,10 @@ def ambient_exchange(conn: sqlite3.Connection, *, rng=None, use_gate: bool = Tru
     """
     rng = rng or _random
     now = now or datetime.now(timezone.utc)
-    teams = [dict(r) for r in conn.execute("SELECT * FROM teams")]
+    # Governance chat_mute: muted teams are pulled from the starter/replier pool.
+    muted = effects.active_team_ids(conn, "chat_mute", rosters.current_week(conn))
+    teams = [dict(r) for r in conn.execute("SELECT * FROM teams")
+             if r["team_id"] not in muted]
     if not teams:
         return []
 

@@ -27,6 +27,8 @@ Enact a passed bylaw as ONE bounded mechanical effect (option C):
         --team "Thee Vibes Only" --weeks 2
     python -m scripts.review_bylaws --effect 7 --type loser_flag \
         --team "Slow News Day" --label "must draft in a clown costume"
+    python -m scripts.review_bylaws --effect 7 --type chat_mute \
+        --team "Litigation Nation" --weeks 1
 
 Reject a passed bylaw:
     python -m scripts.review_bylaws --reject 7 --reason "too far, even for us"
@@ -36,6 +38,7 @@ Effects and their params (all bounds-checked in ffl/effects.py):
     trade_freeze     --team, --weeks      (1..GOV_FREEZE_MAX_WEEKS)
     waiver_backseat  --team, --weeks      (1..GOV_BACKSEAT_MAX_WEEKS)
     loser_flag       --team, --label      (label sanitized, <= GOV_LOSER_LABEL_MAX)
+    chat_mute        --team, --weeks      (1..GOV_CHAT_MUTE_MAX_WEEKS)
 """
 import argparse
 import json
@@ -79,8 +82,8 @@ def _print_list(conn):
               f"   (model picks the effect; add --dry-run to preview)")
         print(f"       enact as lore:    review_bylaws --lore {b['bylaw_id']}")
         print(f"       effect by hand:   review_bylaws --effect {b['bylaw_id']} "
-              f"--type <faab_adjust|trade_freeze|waiver_backseat|loser_flag> "
-              f"--team \"<name>\" ...")
+              f"--type <faab_adjust|trade_freeze|waiver_backseat|loser_flag|"
+              f"chat_mute> --team \"<name>\" ...")
         print(f"       reject:           review_bylaws --reject {b['bylaw_id']} "
               f"--reason \"...\"")
         print(f"       needs new effect: review_bylaws --draft {b['bylaw_id']}"

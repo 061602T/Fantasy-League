@@ -12,11 +12,11 @@ that doesn't exist.
 What takes effect when:
   * ``faab_adjust`` changes ``teams.faab_remaining`` immediately on enactment
     (clamped), and ``loser_flag`` stores a display flag immediately.
-  * ``trade_freeze`` / ``waiver_backseat`` RECORD their state in ``team_effects``
-    with an ``active_through_week``, but the enforcement hooks (skipping a frozen
-    team in the trade loop, penalising a back-seated team's waiver ties) are
-    deliberately NOT wired into the live tick loop yet -- that is a separate,
-    reviewed step. Until then they are recorded and queryable but inert.
+  * ``trade_freeze`` / ``waiver_backseat`` / ``chat_mute`` RECORD their state in
+    ``team_effects`` with an ``active_through_week``; their enforcement hooks
+    (skipping a frozen team in the trade loop, penalising a back-seated team's
+    waiver ties, silencing a muted team in group chat) live in ffl/market.py and
+    ffl/chat.py respectively.
 
 The model never reaches this code: a GM's bylaw is free text, and the
 commissioner -- a human -- chooses which effect (if any) to apply. This module
@@ -158,6 +158,8 @@ EFFECTS = {
     "waiver_backseat": (_v_weeks(config.GOV_BACKSEAT_MAX_WEEKS),
                         _a_duration("waiver_backseat")),
     "loser_flag":      (_v_loser, _a_loser),
+    "chat_mute":       (_v_weeks(config.GOV_CHAT_MUTE_MAX_WEEKS),
+                        _a_duration("chat_mute")),
 }
 
 # Human/model-facing metadata for each effect, used by the commissioner's
@@ -184,6 +186,10 @@ EFFECT_META = {
     "loser_flag": {
         "desc": "attach a display-only shame label to one team",
         "params": {"label": ("str", "short text label")},
+    },
+    "chat_mute": {
+        "desc": "revoke one team's league group-chat posting privileges for a while",
+        "params": {"weeks": ("int", f"integer 1 to {config.GOV_CHAT_MUTE_MAX_WEEKS}")},
     },
 }
 

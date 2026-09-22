@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ffl import config, db, effects, governance, market
+from ffl import chat, config, db, effects, governance, market
 
 _CHATTINESS = ["trash-talker", "moderate", "quiet", "moderate",
                "quiet", "moderate", "trash-talker", "quiet"]
@@ -80,6 +80,20 @@ def test_duration_and_loser_bounds():
     assert len(label) <= config.GOV_LOSER_LABEL_MAX and row["active_through_week"] is None
     assert not effects.validate_effect(conn, "bogus", 1, {})[0], "unknown effect"
     print("ok: duration/loser bounds (weeks 1..max, label capped, unknown rejected)")
+
+
+def test_chat_mute_bounds():
+    conn = _seed()
+    assert not effects.validate_effect(conn, "chat_mute", 1, {"weeks": 0})[0]
+    # Capped at exactly 1 week -- a single 24h-style restriction per violation.
+    assert not effects.validate_effect(conn, "chat_mute", 1, {"weeks": 2})[0]
+    assert not effects.validate_effect(conn, "chat_mute", 999, {"weeks": 1})[0]
+    ok, _ = effects.apply_effect(conn, "chat_mute", 1, {"weeks": 1}, bylaw_id=None)
+    assert ok
+    row = conn.execute("SELECT active_through_week FROM team_effects WHERE "
+                       "team_id=1 AND effect_type='chat_mute'").fetchone()
+    assert row["active_through_week"] == 2   # current_week 1 + 1 week
+    print("ok: chat_mute bounds (weeks capped at 1, unknown team rejected)")
 
 
 # --- propose / vote / tally -------------------------------------------------
@@ -501,9 +515,27 @@ def test_waiver_backseat_ordering():
     print("ok: waiver_backseat loses ties but not higher bids")
 
 
+def test_chat_mute_blocks_posting():
+    conn = _seed()
+    effects.apply_effect(conn, "chat_mute", 1, {"weeks": 1})   # wk1 -> through wk2
+    assert effects.active_team_ids(conn, "chat_mute", 1) == {1}
+    assert effects.active_team_ids(conn, "chat_mute", 2) == {1}
+    assert effects.active_team_ids(conn, "chat_mute", 3) == set()   # expired
+
+    # Filtered out before any gate/LLM call: a muted team alone posts nothing.
+    assert chat.react_to_event(conn, "headline", team_ids=[1], use_gate=False) == []
+
+    # Mute the whole league -> the ambient starter pool is empty, no LLM call.
+    for tid in range(2, 9):
+        effects.apply_effect(conn, "chat_mute", tid, {"weeks": 1})
+    assert chat.ambient_exchange(conn) == []
+    print("ok: chat_mute silences a team in event chat and the ambient loop")
+
+
 def main():
     test_faab_bounds()
     test_duration_and_loser_bounds()
+    test_chat_mute_bounds()
     test_propose_sanitizes_and_locks()
     test_vote_pass()
     test_vote_tie_fails()
@@ -529,6 +561,7 @@ def main():
     test_tick_step_never_raises()
     test_active_window_and_freeze_blocks_trades()
     test_waiver_backseat_ordering()
+    test_chat_mute_blocks_posting()
     print("\nALL OFFLINE GOVERNANCE TESTS PASSED")
     return 0
 
