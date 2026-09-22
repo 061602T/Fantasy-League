@@ -12,11 +12,13 @@ that doesn't exist.
 What takes effect when:
   * ``faab_adjust`` changes ``teams.faab_remaining`` immediately on enactment
     (clamped), and ``loser_flag`` stores a display flag immediately.
-  * ``trade_freeze`` / ``waiver_backseat`` RECORD their state in ``team_effects``
-    with an ``active_through_week``, but the enforcement hooks (skipping a frozen
-    team in the trade loop, penalising a back-seated team's waiver ties) are
-    deliberately NOT wired into the live tick loop yet -- that is a separate,
-    reviewed step. Until then they are recorded and queryable but inert.
+  * ``trade_freeze`` / ``waiver_backseat`` / ``kicker_flex_lock`` RECORD their
+    state in ``team_effects`` with an ``active_through_week``; their enforcement
+    hooks read it back via ``active_team_ids`` -- skipping a frozen team in the
+    trade loop (``ffl/market.py:negotiate``), penalising a back-seated team's
+    waiver ties (``ffl/market.py:_waiver_priority_key``), and forcing a locked
+    team's kicker into FLEX when its weekly lineup is set
+    (``ffl/season.py:set_lineup``).
 
 The model never reaches this code: a GM's bylaw is free text, and the
 commissioner -- a human -- chooses which effect (if any) to apply. This module
@@ -157,6 +159,8 @@ EFFECTS = {
                         _a_duration("trade_freeze")),
     "waiver_backseat": (_v_weeks(config.GOV_BACKSEAT_MAX_WEEKS),
                         _a_duration("waiver_backseat")),
+    "kicker_flex_lock": (_v_weeks(config.GOV_KICKER_FLEX_MAX_WEEKS),
+                        _a_duration("kicker_flex_lock")),
     "loser_flag":      (_v_loser, _a_loser),
 }
 
@@ -180,6 +184,10 @@ EFFECT_META = {
     "waiver_backseat": {
         "desc": "send one team to the back of every waiver tie for a while",
         "params": {"weeks": ("int", f"integer 1 to {config.GOV_BACKSEAT_MAX_WEEKS}")},
+    },
+    "kicker_flex_lock": {
+        "desc": "force one team's kicker into the FLEX slot (K sits empty) for a while",
+        "params": {"weeks": ("int", f"integer 1 to {config.GOV_KICKER_FLEX_MAX_WEEKS}")},
     },
     "loser_flag": {
         "desc": "attach a display-only shame label to one team",
