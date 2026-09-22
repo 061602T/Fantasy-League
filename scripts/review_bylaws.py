@@ -27,6 +27,8 @@ Enact a passed bylaw as ONE bounded mechanical effect (option C):
         --team "Thee Vibes Only" --weeks 2
     python -m scripts.review_bylaws --effect 7 --type loser_flag \
         --team "Slow News Day" --label "must draft in a clown costume"
+    python -m scripts.review_bylaws --effect 7 --type late_fee \
+        --team "Litigation Nation" --opponent "Reasonable Doubt" --amount 10
 
 Reject a passed bylaw:
     python -m scripts.review_bylaws --reject 7 --reason "too far, even for us"
@@ -36,6 +38,9 @@ Effects and their params (all bounds-checked in ffl/effects.py):
     trade_freeze     --team, --weeks      (1..GOV_FREEZE_MAX_WEEKS)
     waiver_backseat  --team, --weeks      (1..GOV_BACKSEAT_MAX_WEEKS)
     loser_flag       --team, --label      (label sanitized, <= GOV_LOSER_LABEL_MAX)
+    late_fee         --team, --opponent, --amount
+                     (--team pays --opponent; 1 <= amount <= GOV_LATE_FEE_MAX;
+                     transferred as FAAB, floored so the payer never goes negative)
 """
 import argparse
 import json
@@ -79,8 +84,8 @@ def _print_list(conn):
               f"   (model picks the effect; add --dry-run to preview)")
         print(f"       enact as lore:    review_bylaws --lore {b['bylaw_id']}")
         print(f"       effect by hand:   review_bylaws --effect {b['bylaw_id']} "
-              f"--type <faab_adjust|trade_freeze|waiver_backseat|loser_flag> "
-              f"--team \"<name>\" ...")
+              f"--type <faab_adjust|trade_freeze|waiver_backseat|loser_flag|"
+              f"late_fee> --team \"<name>\" ...")
         print(f"       reject:           review_bylaws --reject {b['bylaw_id']} "
               f"--reason \"...\"")
         print(f"       needs new effect: review_bylaws --draft {b['bylaw_id']}"
@@ -114,6 +119,8 @@ def main():
     ap.add_argument("--delta", type=int, help="faab_adjust delta (with --effect)")
     ap.add_argument("--weeks", type=int, help="freeze/backseat weeks (with --effect)")
     ap.add_argument("--label", help="loser_flag label (with --effect)")
+    ap.add_argument("--opponent", help="late_fee: opponent team NAME who is paid")
+    ap.add_argument("--amount", type=int, help="late_fee amount (with --effect)")
     ap.add_argument("--auto", type=int, metavar="ID",
                     help="approve bylaw ID and let the model pick + apply the "
                          "single best bounded effect (still validated)")
@@ -193,6 +200,10 @@ def main():
             params["weeks"] = args.weeks
         if args.label is not None:
             params["label"] = args.label
+        if args.opponent is not None:
+            params["opponent"] = args.opponent
+        if args.amount is not None:
+            params["amount"] = args.amount
         ok, msg = governance.enact_effect(conn, args.effect, args.type, tid, params)
         print(msg if ok else f"error: {msg}", file=sys.stderr if not ok else sys.stdout)
         return 0 if ok else 1
