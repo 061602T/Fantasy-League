@@ -207,6 +207,27 @@ def test_reject():
     print("ok: commissioner reject -> rejected_admin")
 
 
+def test_suggest_effect_generic_params():
+    # Runs BEFORE test_enact_auto (which permanently stubs suggest_effect), so it
+    # exercises the real registry-driven picker.
+    conn = _seed()
+    governance.llm.chat_json = lambda *a, **k: {
+        "effect_type": "trade_freeze", "team": "Team 3",
+        "params": {"weeks": 2}, "reason": "cool off"}
+    out = governance.suggest_effect(conn, {"title": "t", "rationale": "p"})
+    assert out["effect_type"] == "trade_freeze" and out["params"] == {"weeks": 2}
+    assert out["team"] == "Team 3", out
+    # An effect not in the registry is refused (nothing to map to).
+    governance.llm.chat_json = lambda *a, **k: {
+        "effect_type": "nope", "team": "Team 3", "params": {}}
+    assert governance.suggest_effect(conn, {"title": "t", "rationale": "p"}) is None
+    # The menu is built from metadata -- every registered effect appears in it.
+    menu = governance._effect_menu()
+    assert all(et in menu for et in effects.EFFECT_META), menu
+    assert set(effects.EFFECT_META) == set(effects.EFFECTS), "META/EFFECTS drift"
+    print("ok: suggest_effect builds params from metadata; menu covers all effects")
+
+
 def test_enact_auto():
     conn = _seed()
     bid = _passed_bylaw(conn)
@@ -385,6 +406,38 @@ def test_dispatch_pending_open_failure_retries():
     print("ok: a failed issue open leaves the bylaw untriaged for retry")
 
 
+def test_enact_auto_all():
+    conn = _seed()
+    _passed_bylaw(conn)
+    _passed_bylaw(conn)     # two pending bylaws
+    conn.execute("UPDATE teams SET faab_remaining=100 WHERE team_id=2")
+    governance.suggest_effect = lambda conn, b: {
+        "effect_type": "faab_adjust", "team": "Team 2",
+        "params": {"delta": -10}, "reason": "batch"}
+    # dry-run applies nothing and leaves both pending.
+    res = governance.enact_auto_all(conn, dry_run=True)
+    assert len(res) == 2 and all(r["ok"] for r in res), res
+    assert len(governance.pending(conn)) == 2
+    assert conn.execute("SELECT faab_remaining FROM teams WHERE team_id=2"
+                        ).fetchone()[0] == 100
+    # real run approves both in one pass.
+    res2 = governance.enact_auto_all(conn)
+    assert all(r["ok"] for r in res2) and governance.pending(conn) == []
+    assert conn.execute("SELECT faab_remaining FROM teams WHERE team_id=2"
+                        ).fetchone()[0] == 80    # -10 applied twice
+    print("ok: enact_auto_all approves all mappable pending bylaws in one pass")
+
+
+def test_enact_auto_all_leaves_unmappable_pending():
+    conn = _seed()
+    bid = _passed_bylaw(conn)
+    governance.suggest_effect = lambda conn, b: None   # model can't map it
+    res = governance.enact_auto_all(conn)
+    assert res and not res[0]["ok"]
+    assert governance.pending(conn)[0]["bylaw_id"] == bid, "must stay pending"
+    print("ok: enact_auto_all leaves an unmappable bylaw pending, forces nothing")
+
+
 # --- phase 1: tick wiring ---------------------------------------------------
 
 def test_tick_step_proposes_then_votes():
@@ -459,6 +512,7 @@ def main():
     test_enact_effect()
     test_enact_effect_out_of_bounds_refused()
     test_reject()
+    test_suggest_effect_generic_params()   # real picker, BEFORE test_enact_auto stubs it
     test_enact_auto()
     test_draft_brief()
     test_enact_auto_bad_suggestion_refused()
@@ -469,6 +523,8 @@ def main():
     test_dispatch_pending_limit_and_resume()
     test_dispatch_pending_dry_run()
     test_dispatch_pending_open_failure_retries()
+    test_enact_auto_all()
+    test_enact_auto_all_leaves_unmappable_pending()
     test_tick_step_proposes_then_votes()
     test_tick_step_never_raises()
     test_active_window_and_freeze_blocks_trades()

@@ -12,6 +12,11 @@ effect from the whitelist and applies it (add --dry-run to preview first):
     python -m scripts.review_bylaws --auto 7
     python -m scripts.review_bylaws --auto 7 --dry-run
 
+Approve ALL pending bylaws in one pass (each mapped + applied like --auto;
+anything the model can't map is left pending, so nothing is forced):
+    python -m scripts.review_bylaws --auto-all
+    python -m scripts.review_bylaws --auto-all --dry-run
+
 Enact a passed bylaw as a standing, display-only league rule (option B):
     python -m scripts.review_bylaws --lore 7
 
@@ -112,6 +117,10 @@ def main():
     ap.add_argument("--auto", type=int, metavar="ID",
                     help="approve bylaw ID and let the model pick + apply the "
                          "single best bounded effect (still validated)")
+    ap.add_argument("--auto-all", action="store_true",
+                    help="approve EVERY pending bylaw the model can map to a "
+                         "bounded effect, in one pass (unmappable ones are left "
+                         "pending); add --dry-run to preview")
     ap.add_argument("--dry-run", action="store_true",
                     help="with --auto, show the effect it would apply without "
                          "changing anything")
@@ -133,6 +142,24 @@ def main():
     if len(chosen) > 1:
         print("Choose only one action flag.", file=sys.stderr)
         return 2
+
+    if args.auto_all:
+        results = governance.enact_auto_all(conn, dry_run=args.dry_run)
+        if not results:
+            print("No bylaws pending approval.")
+            return 0
+        applied = 0
+        for r in results:
+            if args.dry_run:
+                tag = "would" if r["ok"] else "skip "
+            else:
+                tag = "OK   " if r["ok"] else "skip "
+                applied += 1 if r["ok"] else 0
+            print(f"  #{r['bylaw_id']:>3} [{tag}] {r['msg']}")
+        if not args.dry_run:
+            print(f"applied {applied}/{len(results)} "
+                  f"(any unmapped were left pending)")
+        return 0
 
     if args.draft is not None:
         ok, msg = governance.draft_brief(conn, args.draft)

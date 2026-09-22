@@ -351,23 +351,23 @@ def reject(conn, bylaw_id, reason="", *, now=None) -> tuple[bool, str]:
 # --- one-command enactment: let the model pick the bounded effect -----------
 
 def _effect_menu() -> str:
-    return (
-        "Choose exactly ONE of these bounded effects (nothing else exists):\n"
-        f"- faab_adjust: change a team's FAAB budget. param delta = integer "
-        f"from -{int(config.GOV_FAAB_MAX_DELTA)} to {int(config.GOV_FAAB_MAX_DELTA)}, "
-        "non-zero (negative = a penalty).\n"
-        f"- trade_freeze: bar a team from trading. param weeks = 1 to "
-        f"{config.GOV_FREEZE_MAX_WEEKS}.\n"
-        f"- waiver_backseat: send a team to the back of every waiver tie. param "
-        f"weeks = 1 to {config.GOV_BACKSEAT_MAX_WEEKS}.\n"
-        "- loser_flag: a display-only punishment label. param label = short text.")
+    """The whitelist the model may pick from, built from effects.EFFECT_META so a
+    newly registered effect is offered automatically (nothing is hard-coded)."""
+    lines = ["Choose exactly ONE of these bounded effects (nothing else exists):"]
+    for et in sorted(effects.EFFECT_META):
+        m = effects.EFFECT_META[et]
+        ps = "; ".join(f"{p} = {spec[1]}" for p, spec in m["params"].items())
+        lines.append(f"- {et}: {m['desc']}" + (f". param {ps}." if ps else "."))
+    return "\n".join(lines)
 
 
 def suggest_effect(conn, bylaw) -> dict | None:
     """Ask the model to translate a passed free-form bylaw into ONE bounded
-    effect: {effect_type, team, params, reason}. Constrained to the whitelist;
-    returns None if it can't produce a usable choice. Parameters are still
-    re-validated by the caller before anything applies."""
+    effect: {effect_type, team, params, reason}. Constrained to the effects that
+    carry EFFECT_META (so any new effect the coding agent registers is offered
+    automatically); returns None if it can't produce a usable choice. Parameters
+    are coerced per the effect's declared kinds and re-validated by the caller
+    before anything applies."""
     teams = ", ".join(r["team_name"] for r in conn.execute(
         "SELECT team_name FROM teams ORDER BY draft_slot"))
     system = ("You are the commissioner's assistant. A league bylaw has PASSED a "
@@ -377,29 +377,31 @@ def suggest_effect(conn, bylaw) -> dict | None:
     user = (f'Passed bylaw: "{bylaw["title"]}"\nPitch: {bylaw["rationale"]}\n\n'
             f"Teams: {teams}\n\n{_effect_menu()}\n\n"
             "Pick the effect, the target team (exact name from the list), and its "
-            'parameter. Return JSON {"effect_type": "...", "team": "<team name>", '
-            '"delta": <int or null>, "weeks": <int or null>, '
-            '"label": "<text or null>", "reason": "<one short line>"}.')
+            'parameter(s). Return JSON {"effect_type": "...", "team": "<team '
+            'name>", "params": {<the param name(s) for that effect>: <value>}, '
+            '"reason": "<one short line>"}.')
     try:
         data = llm.chat_json(system, user, max_tokens=400)
     except (ValueError, TypeError):
         return None
     et = str(data.get("effect_type", "")).strip()
-    if et not in effects.EFFECTS:
+    meta = effects.EFFECT_META.get(et)
+    if et not in effects.EFFECTS or meta is None:
+        return None
+    raw = data.get("params")
+    if not isinstance(raw, dict):
         return None
     params = {}
-    if data.get("delta") is not None:
-        try:
-            params["delta"] = int(data["delta"])
-        except (TypeError, ValueError):
-            return None
-    if data.get("weeks") is not None:
-        try:
-            params["weeks"] = int(data["weeks"])
-        except (TypeError, ValueError):
-            return None
-    if data.get("label"):
-        params["label"] = str(data["label"])
+    for pname, (kind, _desc) in meta["params"].items():
+        if raw.get(pname) is None:
+            continue
+        if kind == "int":
+            try:
+                params[pname] = int(raw[pname])
+            except (TypeError, ValueError):
+                return None
+        else:
+            params[pname] = str(raw[pname])
     return {"effect_type": et, "team": str(data.get("team", "")).strip(),
             "params": params, "reason": str(data.get("reason", "")).strip()}
 
@@ -427,11 +429,14 @@ exactly:
 
 1. ffl/config.py -- add any bound constants (GOV_*, env-overridable), matching \
 the style of the existing governance config block.
-2. ffl/effects.py -- add _v_<name> and _a_<name>, register them in EFFECTS. A \
-duration effect records a team_effects row with active_through_week; its \
-enforcement hook (e.g. in ffl/market.py for trades/waivers) reads it via \
-effects.active_team_ids. Keep it strictly bounded and validated -- no free-form \
-execution, no arbitrary SQL.
+2. ffl/effects.py -- add _v_<name> and _a_<name>, register them in EFFECTS, AND \
+add a matching entry to EFFECT_META (a one-line description and each param's \
+kind "int"/"str" + bounds). The EFFECT_META entry is what lets the \
+commissioner's `--auto` / `--auto-all` picker offer the new effect \
+automatically, so do not skip it. A duration effect records a team_effects row \
+with active_through_week; its enforcement hook (e.g. in ffl/market.py for \
+trades/waivers) reads it via effects.active_team_ids. Keep it strictly bounded \
+and validated -- no free-form execution, no arbitrary SQL.
 3. scripts/review_bylaws.py -- add the new --type choice and any params (--delta \
 / --weeks / --label style), and mention it in the effects list in the docstring.
 4. scripts/test_governance.py -- add bounds tests (reject out-of-range, apply \
@@ -487,6 +492,21 @@ def enact_auto(conn, bylaw_id, *, dry_run=False, now=None) -> tuple[bool, str]:
         return True, f"[dry run] would enact: {plan}"
     return enact_effect(conn, bylaw_id, sug["effect_type"], tid, sug["params"],
                         now=now)
+
+
+def enact_auto_all(conn, *, dry_run=False, now=None) -> list[dict]:
+    """Approve EVERY pending bylaw the model can map to a bounded effect, in one
+    pass -- the batch behind `review_bylaws --auto-all`. Unmappable ones are left
+    pending (reported, not applied), so nothing is forced and re-running is safe.
+    A human still runs this one command, so the 'a human is always the executor'
+    rule holds; it just isn't one command per bylaw. Returns a result per pending
+    bylaw."""
+    out = []
+    for b in pending(conn):
+        ok, msg = enact_auto(conn, b["bylaw_id"], dry_run=dry_run, now=now)
+        out.append({"bylaw_id": b["bylaw_id"], "title": b["title"],
+                    "ok": ok, "msg": msg})
+    return out
 
 
 # --- coding-agent dispatch: draft a NEW effect for bylaws the toolbox can't fit -

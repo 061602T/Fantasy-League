@@ -160,6 +160,33 @@ EFFECTS = {
     "loser_flag":      (_v_loser, _a_loser),
 }
 
+# Human/model-facing metadata for each effect, used by the commissioner's
+# auto-picker (governance.suggest_effect / --auto). Keep one entry per EFFECTS
+# key. `params` maps each accepted parameter to (kind, description-with-bounds),
+# where kind is "int" or "str". A NEW effect the coding agent adds must add its
+# entry here too -- that (and only that) is what lets `review_bylaws --auto`
+# offer it automatically, so nothing hard-codes the effect list anymore.
+EFFECT_META = {
+    "faab_adjust": {
+        "desc": "change one team's FAAB waiver budget (negative = a penalty)",
+        "params": {"delta": ("int",
+                   f"non-zero integer from -{config.GOV_FAAB_MAX_DELTA} to "
+                   f"{config.GOV_FAAB_MAX_DELTA}")},
+    },
+    "trade_freeze": {
+        "desc": "bar one team from making trades for a while",
+        "params": {"weeks": ("int", f"integer 1 to {config.GOV_FREEZE_MAX_WEEKS}")},
+    },
+    "waiver_backseat": {
+        "desc": "send one team to the back of every waiver tie for a while",
+        "params": {"weeks": ("int", f"integer 1 to {config.GOV_BACKSEAT_MAX_WEEKS}")},
+    },
+    "loser_flag": {
+        "desc": "attach a display-only shame label to one team",
+        "params": {"label": ("str", "short text label")},
+    },
+}
+
 
 def validate_effect(conn, effect_type, team_id, params) -> tuple[bool, str]:
     if effect_type not in EFFECTS:
