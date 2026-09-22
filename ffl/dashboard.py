@@ -178,13 +178,16 @@ def _recent_chat(conn, limit=24):
         "SELECT MAX(chat_id) h FROM chat_log WHERE event_type = 'draft'"
     ).fetchone()["h"]
     where = "WHERE c.chat_id > ?" if cut is not None else ""
-    params = ([cut] if cut is not None else []) + [limit]
+    params = [cut] if cut is not None else []
+    limit_sql = ""
+    if limit is not None:                      # limit=None -> full history
+        limit_sql, params = " LIMIT ?", params + [limit]
     rows = conn.execute(
         f"""SELECT c.chat_id, c.event_type, c.message, c.created_at, c.reply_to,
                   c.team_id, t.gm_name
              FROM chat_log c LEFT JOIN teams t ON t.team_id = c.team_id
             {where}
-            ORDER BY c.chat_id DESC LIMIT ?""", params).fetchall()
+            ORDER BY c.chat_id DESC{limit_sql}""", params).fetchall()
     # Look up the parent of any reply (it may be older than the shown window),
     # so a reply can render a quoted preview of the message it answers.
     parent_ids = {r["reply_to"] for r in rows if r["reply_to"]}
@@ -536,6 +539,19 @@ def _chat_feed(chat, bios=None):
             f"{quote}"
             f"<span class='line'>{_esc(msg)}</span></div></li>")
     return "<ul class='chat'>" + "".join(items) + "</ul>"
+
+
+def _chat_card(chat, bios=None, head=40):
+    """The chat feed with the newest `head` messages shown and the rest of the
+    history (all the way back to the first message) tucked behind a 'Load older
+    messages' reveal, so the full log is available without a giant initial view.
+    `chat` is newest-first, so the tail is the older half."""
+    if len(chat) <= head:
+        return _chat_feed(chat, bios)
+    recent, older = chat[:head], chat[head:]
+    return (_chat_feed(recent, bios)
+            + f"<details class='olderchat'><summary>Load older messages "
+              f"({len(older)})</summary>{_chat_feed(older, bios)}</details>")
 
 
 def _draft_chat(conn):
@@ -899,6 +915,13 @@ a.gm.namelink{color:var(--muted)}
 /* Chat -- a prominent, full-width section right under the standings. */
 .eyebrow.big{font-size:14px;padding:5px 12px}
 .chatwrap .card{border-width:2px}
+.olderchat{border-top:2px solid var(--line)}
+.olderchat>summary{cursor:pointer;list-style:none;padding:11px 16px;
+  font:700 12px/1 "Oswald",sans-serif;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--accent);text-align:center}
+.olderchat>summary::-webkit-details-marker{display:none}
+.olderchat>summary:hover{filter:brightness(1.1)}
+.olderchat[open]>summary{color:var(--muted)}
 .chathead{display:flex;align-items:center;justify-content:space-between;gap:10px;
   flex-wrap:wrap;margin:0 0 12px}
 .chathead .eyebrow{margin:0}
@@ -1085,7 +1108,7 @@ def render(conn: sqlite3.Connection) -> str:
     claims = _waiver_history(conn)
     fa_week = next_week or (shown_week + 1)
     free_agents = _free_agents(conn, season, fa_week)
-    chat = _recent_chat(conn)
+    chat = _recent_chat(conn, limit=None)   # full history; _chat_card folds the tail
     draft = _draft_chat(conn)
     # GM bio cards, opened by clicking a name in chat.
     bios = {r["team_id"]: {"gm": r["gm_name"], "team": r["team_name"],
@@ -1143,7 +1166,7 @@ def render(conn: sqlite3.Connection) -> str:
       <p class="eyebrow big"><span class="lbl-chat">League chat</span><span class="lbl-draft">Draft board</span></p>
       <label class="viewbtn" for="draftview"><span class="lbl-chat">View draft &rarr;</span><span class="lbl-draft">&larr; View chat</span></label>
     </div>
-    <div class="card view-chat">{_chat_feed(chat, bios)}</div>
+    <div class="card view-chat">{_chat_card(chat, bios)}</div>
     <div class="card view-draft">{_draft_feed(draft, bios)}</div>
   </section>
 {_upcoming_section(upcoming, next_week)}
