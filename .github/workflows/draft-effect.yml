@@ -1,0 +1,40 @@
+name: Draft governance effect
+
+# When the league's dispatch job (scripts/dispatch_effects.py, running on the Pi)
+# files a "[gov-effect]" issue for a passed bylaw that needs a brand-new bounded
+# effect, let the Claude Code GitHub Action implement it on a branch and open a
+# pull request. The PR is NEVER merged automatically: the commissioner reviews
+# and merges, then the Pi enacts the bylaw with `review_bylaws --auto <id>`.
+#
+# Only issues whose title starts with "[gov-effect]" start a runner (the `if`
+# below); the issue body carries the "@claude" trigger and the implementation
+# brief, so the action runs in interactive mode and turns the issue into a PR.
+#
+# Setup (one time): install the Claude GitHub App on this repo and add an
+# ANTHROPIC_API_KEY repository secret. See docs/agent-effects.md.
+
+on:
+  issues:
+    types: [opened, labeled]
+
+jobs:
+  draft-effect:
+    if: startsWith(github.event.issue.title, '[gov-effect]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write        # create the branch / commit the new effect
+      pull-requests: write   # open the PR
+      issues: write          # comment progress on the issue
+      id-token: write        # Claude GitHub App authentication
+      actions: read          # read CI results
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: |
+            --max-turns 40
+            --model claude-sonnet-5

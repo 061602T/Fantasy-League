@@ -262,6 +262,129 @@ def test_enact_auto_bad_suggestion_refused():
     print("ok: --auto refuses an invalid/unmappable suggestion, leaves it pending")
 
 
+# --- coding-agent dispatch --------------------------------------------------
+
+def test_draft_brief_sketch():
+    conn = _seed()
+    bid = _passed_bylaw(conn)
+    ok, brief = governance.draft_brief(conn, bid, sketch="record a capped bonus")
+    assert ok and "record a capped bonus" in brief and "automated triage" in brief
+    ok2, plain = governance.draft_brief(conn, bid)
+    assert ok2 and "Suggested approach" not in plain
+    print("ok: draft_brief folds in a triage sketch when given one")
+
+
+def test_classify_bylaw():
+    conn = _seed()
+    b = {"title": "T", "rationale": "P"}
+    # Real classify_bylaw (before the dispatch tests clobber it): fits an effect.
+    governance.llm.chat_json = lambda *a, **k: {"fits": True,
+                                                "effect_type": "faab_adjust"}
+    assert governance.classify_bylaw(conn, b) == {"fits": True,
+                                                  "effect_type": "faab_adjust"}
+    # 'fits' but names no real effect -> unusable -> None (leave for a human).
+    governance.llm.chat_json = lambda *a, **k: {"fits": True, "effect_type": "nope"}
+    assert governance.classify_bylaw(conn, b) is None
+    # needs-new -> snake_cases the proposed name, keeps the sketch.
+    governance.llm.chat_json = lambda *a, **k: {
+        "fits": False, "name": "Bench Bonus!", "sketch": "  add points  "}
+    out = governance.classify_bylaw(conn, b)
+    assert out == {"fits": False, "name": "bench_bonus", "sketch": "add points"}, out
+    print("ok: classify_bylaw routes fits/needs-new and normalizes the new name")
+
+
+def test_dispatch_pending_new_effect():
+    conn = _seed()
+    bid = _passed_bylaw(conn)
+    governance.classify_bylaw = lambda conn, b: {
+        "fits": False, "name": "bench_bonus", "sketch": "add capped bench points"}
+    calls = []
+
+    def opener(**kw):
+        calls.append(kw)
+        return {"status": "opened", "number": 11,
+                "url": "https://github.com/o/r/issues/11"}
+
+    res = governance.dispatch_pending(conn, opener=opener, limit=1)
+    assert len(calls) == 1 and calls[0]["title"].startswith(f"[gov-effect] Bylaw #{bid}")
+    assert "@claude" in calls[0]["body"] and "add capped bench points" in calls[0]["body"]
+    assert res[0]["action"] == "dispatched"
+    row = conn.execute("SELECT agent_status, agent_issue FROM bylaws WHERE bylaw_id=?",
+                       (bid,)).fetchone()
+    assert row["agent_status"] == "dispatched" and "issues/11" in row["agent_issue"]
+    # Idempotent: already dispatched -> a second run opens nothing.
+    calls.clear()
+    assert governance.dispatch_pending(conn, opener=opener, limit=1) == []
+    assert calls == []
+    print("ok: dispatch_pending files one agent issue for a new-effect bylaw, idempotent")
+
+
+def test_dispatch_pending_fits_existing():
+    conn = _seed()
+    bid = _passed_bylaw(conn)
+    governance.classify_bylaw = lambda conn, b: {"fits": True,
+                                                 "effect_type": "faab_adjust"}
+    calls = []
+    res = governance.dispatch_pending(
+        conn, opener=lambda **k: calls.append(k) or {"status": "opened"}, limit=1)
+    assert calls == [], "a fitting bylaw must not open an issue"
+    assert res[0]["action"] == "fits"
+    assert conn.execute("SELECT agent_status FROM bylaws WHERE bylaw_id=?",
+                        (bid,)).fetchone()[0] == "fits_existing"
+    print("ok: dispatch_pending marks a fitting bylaw for --auto, opens no issue")
+
+
+def test_dispatch_pending_limit_and_resume():
+    conn = _seed()
+    _passed_bylaw(conn)
+    _passed_bylaw(conn)     # two pending bylaws (first is passed, floor is clear)
+    governance.classify_bylaw = lambda conn, b: {"fits": False, "name": "x",
+                                                 "sketch": "s"}
+    calls = []
+
+    def opener(**kw):
+        calls.append(kw)
+        return {"status": "opened", "number": len(calls), "url": f"u{len(calls)}"}
+
+    res = governance.dispatch_pending(conn, opener=opener, limit=1)
+    assert len(calls) == 1, "limit=1 should open exactly one issue"
+    actions = [r["action"] for r in res]
+    assert actions.count("dispatched") == 1 and "deferred" in actions
+    # The deferred bylaw stays untriaged, so the next run picks it up.
+    calls.clear()
+    governance.dispatch_pending(conn, opener=opener, limit=1)
+    assert len(calls) == 1
+    print("ok: dispatch_pending honors --limit and resumes the deferred bylaw")
+
+
+def test_dispatch_pending_dry_run():
+    conn = _seed()
+    bid = _passed_bylaw(conn)
+    governance.classify_bylaw = lambda conn, b: {"fits": False, "name": "x",
+                                                 "sketch": "s"}
+    # opener must never be called on a dry run.
+    res = governance.dispatch_pending(
+        conn, opener=lambda **k: 1 / 0, limit=1, dry_run=True)
+    assert res[0]["action"] == "would_dispatch"
+    assert conn.execute("SELECT agent_status FROM bylaws WHERE bylaw_id=?",
+                        (bid,)).fetchone()[0] is None
+    print("ok: dispatch_pending --dry-run classifies without opening or writing")
+
+
+def test_dispatch_pending_open_failure_retries():
+    conn = _seed()
+    bid = _passed_bylaw(conn)
+    governance.classify_bylaw = lambda conn, b: {"fits": False, "name": "x",
+                                                 "sketch": "s"}
+    res = governance.dispatch_pending(
+        conn, opener=lambda **k: {"status": "error", "error": "boom"}, limit=1)
+    assert res[0]["action"] == "dispatch_failed"
+    # Left untriaged so a later run retries -- a failed file must not lose the bylaw.
+    assert conn.execute("SELECT agent_status FROM bylaws WHERE bylaw_id=?",
+                        (bid,)).fetchone()[0] is None
+    print("ok: a failed issue open leaves the bylaw untriaged for retry")
+
+
 # --- phase 1: tick wiring ---------------------------------------------------
 
 def test_tick_step_proposes_then_votes():
@@ -339,6 +462,13 @@ def main():
     test_enact_auto()
     test_draft_brief()
     test_enact_auto_bad_suggestion_refused()
+    test_draft_brief_sketch()
+    test_classify_bylaw()            # real classify_bylaw -- must run before...
+    test_dispatch_pending_new_effect()   # ...the dispatch tests, which stub it
+    test_dispatch_pending_fits_existing()
+    test_dispatch_pending_limit_and_resume()
+    test_dispatch_pending_dry_run()
+    test_dispatch_pending_open_failure_retries()
     test_tick_step_proposes_then_votes()
     test_tick_step_never_raises()
     test_active_window_and_freeze_blocks_trades()

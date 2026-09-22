@@ -80,6 +80,14 @@ def _print_list(conn):
               f"--reason \"...\"")
         print(f"       needs new effect: review_bylaws --draft {b['bylaw_id']}"
               f"   (brief for a coding agent to add one)")
+        ag = b.get("agent_status") if isinstance(b, dict) else b["agent_status"]
+        if ag == "dispatched":
+            where = (b["agent_issue"] or "issue filed")
+            print(f"       coding agent:     issue filed ({where}) -- review "
+                  f"the PR, merge, pull on the Pi, then --auto {b['bylaw_id']}")
+        elif ag == "fits_existing":
+            print(f"       coding agent:     triaged as fitting an existing "
+                  f"effect -- just run --auto {b['bylaw_id']}")
 
     print("\n=== Standing league rules (enacted as lore) ===")
     if not lore:

@@ -163,6 +163,11 @@ CREATE TABLE IF NOT EXISTS bylaws (
     votes_close_at   TEXT NOT NULL,
     tally_json       TEXT,          -- {yes,no,abstain,cast,...} captured at close
     enacted_json     TEXT,          -- how the commissioner enacted it (lore/effect/rejected)
+    -- Coding-agent triage (ffl/governance.dispatch_pending): NULL = not yet
+    -- triaged; 'fits_existing' = an existing effect covers it (use --auto);
+    -- 'dispatched' = a [gov-effect] issue was filed for a new effect.
+    agent_status     TEXT,
+    agent_issue      TEXT,          -- URL of the filed coding-agent issue, if any
     created_at       TEXT NOT NULL DEFAULT (datetime('now')),
     resolved_at      TEXT
 );
@@ -223,17 +228,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
     ``init_db``), so a DB opened read-mostly for a backtest or a backup restore
     is brought current too -- a table that doesn't exist yet is skipped.
     """
+    # New tables (governance) are additive -- create any that are missing FIRST,
+    # so the additive column patches below can also reach a `bylaws` table that an
+    # older governance schema created without the newer columns.
+    conn.executescript(_GOVERNANCE_DDL)
     existing = {r["name"] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     for table, column, decl in [("teams", "bio", "TEXT"),
-                                ("chat_log", "reply_to", "INTEGER")]:
+                                ("chat_log", "reply_to", "INTEGER"),
+                                ("bylaws", "agent_status", "TEXT"),
+                                ("bylaws", "agent_issue", "TEXT")]:
         if table not in existing:
             continue
         cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
-    # New tables (governance) are additive too -- create any that are missing.
-    conn.executescript(_GOVERNANCE_DDL)
     conn.commit()
 
 
