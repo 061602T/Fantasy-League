@@ -82,6 +82,49 @@ def test_duration_and_loser_bounds():
     print("ok: duration/loser bounds (weeks 1..max, label capped, unknown rejected)")
 
 
+def test_late_fee_bounds():
+    conn = _seed()
+    # Rejections: out-of-range amount, missing/unknown/self opponent.
+    ok, _ = effects.validate_effect(conn, "late_fee", 1,
+                                    {"opponent": "Team 2", "amount": 0})
+    assert not ok, "zero amount should be rejected"
+    ok, _ = effects.validate_effect(conn, "late_fee", 1,
+                                    {"opponent": "Team 2", "amount": 999})
+    assert not ok, "over-cap amount should be rejected"
+    ok, _ = effects.validate_effect(conn, "late_fee", 1,
+                                    {"opponent": "Team 1", "amount": 10})
+    assert not ok, "opponent same as payer should be rejected"
+    ok, _ = effects.validate_effect(conn, "late_fee", 1,
+                                    {"opponent": "Nobody FC", "amount": 10})
+    assert not ok, "unknown opponent should be rejected"
+    ok, _ = effects.validate_effect(conn, "late_fee", 999,
+                                    {"opponent": "Team 2", "amount": 10})
+    assert not ok, "unknown team should be rejected"
+
+    # Apply within range: capped $10 transfers from payer to opponent.
+    ok, msg = effects.apply_effect(conn, "late_fee", 1,
+                                   {"opponent": "Team 2", "amount": 10})
+    assert ok, msg
+    rows = {r["team_id"]: r["faab_remaining"] for r in
+            conn.execute("SELECT team_id, faab_remaining FROM teams "
+                        "WHERE team_id IN (1,2)")}
+    assert rows == {1: 90, 2: 110}, rows
+    row = conn.execute("SELECT params_json FROM team_effects WHERE team_id=1 "
+                       "AND effect_type='late_fee'").fetchone()
+    assert json.loads(row["params_json"]) == {"opponent_team_id": 2, "amount": 10}
+
+    # Floored so a fine can never push the payer's FAAB negative.
+    conn.execute("UPDATE teams SET faab_remaining=4 WHERE team_id=3")
+    ok, msg = effects.apply_effect(conn, "late_fee", 3,
+                                   {"opponent": "Team 4", "amount": 10})
+    assert ok and "capped" in msg, msg
+    assert conn.execute("SELECT faab_remaining FROM teams WHERE team_id=3"
+                        ).fetchone()[0] == 0
+    assert conn.execute("SELECT faab_remaining FROM teams WHERE team_id=4"
+                        ).fetchone()[0] == 104
+    print("ok: late_fee bounds (amount 1..max, valid opponent, payer floored at 0)")
+
+
 # --- propose / vote / tally -------------------------------------------------
 
 def _stub_propose(title="Tax the hoarders", pitch="They sit on FAAB like dragons."):
@@ -504,6 +547,7 @@ def test_waiver_backseat_ordering():
 def main():
     test_faab_bounds()
     test_duration_and_loser_bounds()
+    test_late_fee_bounds()
     test_propose_sanitizes_and_locks()
     test_vote_pass()
     test_vote_tie_fails()
