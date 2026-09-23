@@ -16,7 +16,8 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 
-from . import config, governance, playoffs, playoffodds, scoreproj, winprob
+from . import (config, governance, playoffs, playoffodds, scoreproj,
+               weeklysummary, winprob)
 
 DEFAULT_PATH = os.path.join("~", "ffl-data", "dashboard.html")
 
@@ -922,6 +923,31 @@ a.gm.namelink{color:var(--muted)}
 .olderchat>summary::-webkit-details-marker{display:none}
 .olderchat>summary:hover{filter:brightness(1.1)}
 .olderchat[open]>summary{color:var(--muted)}
+/* Weekly Recaps: a dropdown per week with a pure-CSS voice switcher. */
+.weekrec{border:2px solid var(--line);border-radius:10px;margin-bottom:10px;
+  background:var(--surface)}
+.weekrec>summary{cursor:pointer;list-style:none;padding:11px 14px;
+  font:700 14px/1 "Oswald",sans-serif;letter-spacing:.04em;color:var(--ink);
+  display:flex;justify-content:space-between;align-items:center}
+.weekrec>summary::-webkit-details-marker{display:none}
+.weekrec>summary::after{content:"▸";color:var(--muted);font-size:12px}
+.weekrec[open]>summary::after{content:"▾"}
+.weekrec[open]>summary{border-bottom:2px solid var(--line)}
+.wr-body{padding:12px 14px}
+.wr-r{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
+.wr-tabs{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+.wr-tabs label{cursor:pointer;font:700 11px/1 "Oswald",sans-serif;
+  letter-spacing:.06em;text-transform:uppercase;padding:6px 11px;
+  border:2px solid var(--line);border-radius:999px;color:var(--muted)}
+.wr-panel{display:none;font-size:13.5px;line-height:1.55;color:var(--ink);
+  overflow-wrap:anywhere;white-space:pre-wrap}
+.wr-r:nth-of-type(1):checked~.wr-panel.wr-p-l,
+.wr-r:nth-of-type(2):checked~.wr-panel.wr-p-n,
+.wr-r:nth-of-type(3):checked~.wr-panel.wr-p-r{display:block}
+.wr-r:nth-of-type(1):checked~.wr-tabs label:nth-child(1),
+.wr-r:nth-of-type(2):checked~.wr-tabs label:nth-child(2),
+.wr-r:nth-of-type(3):checked~.wr-tabs label:nth-child(3){background:var(--accent);
+  color:var(--accent-ink);border-color:var(--accent)}
 .chathead{display:flex;align-items:center;justify-content:space-between;gap:10px;
   flex-wrap:wrap;margin:0 0 12px}
 .chathead .eyebrow{margin:0}
@@ -1084,6 +1110,44 @@ def _bylaws_modal(conn) -> str:
             f"{body}</div></div>")
 
 
+def _weekly_modal(conn) -> str:
+    """The 'Recaps' popup: one dropdown per scored week, each with a Recap /
+    Facts / Roast voice switcher (pure-CSS radios). Auto-written by
+    ffl.weeklysummary; empty until a week has been scored."""
+    weeks = weeklysummary.week_summaries(conn)
+
+    def _panel(cls, txt):
+        return f"<div class='wr-panel {cls}'>{_esc(txt or '')}</div>"
+
+    blocks = []
+    for w in weeks:
+        n = f"wr{w['week']}"
+        blocks.append(
+            f"<details class='weekrec'><summary>Week {w['week']}</summary>"
+            f"<div class='wr-body'>"
+            f"<input type='radio' class='wr-r' name='{n}' id='{n}-l' checked>"
+            f"<input type='radio' class='wr-r' name='{n}' id='{n}-n'>"
+            f"<input type='radio' class='wr-r' name='{n}' id='{n}-r'>"
+            f"<div class='wr-tabs'><label for='{n}-l'>Recap</label>"
+            f"<label for='{n}-n'>Facts</label>"
+            f"<label for='{n}-r'>Roast</label></div>"
+            f"{_panel('wr-p-l', w['lively'])}"
+            f"{_panel('wr-p-n', w['neutral'])}"
+            f"{_panel('wr-p-r', w['roast'])}"
+            f"</div></details>")
+
+    body = "".join(blocks) or (
+        "<p class='biocard-text'>No weekly recaps yet. When a week is scored, an "
+        "auto-written recap appears here &mdash; in three voices you can flip "
+        "between: a normal recap, just the facts, and a full roast.</p>")
+    return (f"<div class='biomodal aboutmodal' id='weekly'>"
+            f"<a class='biobackdrop' href='#'></a>"
+            f"<div class='biocard aboutcard'>"
+            f"<a class='bioclose' href='#' title='Close'>&times;</a>"
+            f"<div class='biocard-name'>Weekly Recaps</div>"
+            f"{body}</div></div>")
+
+
 def render(conn: sqlite3.Connection) -> str:
     lg = _league(conn)
     season = lg["season"] if lg else config.SEASON
@@ -1141,6 +1205,7 @@ def render(conn: sqlite3.Connection) -> str:
   <div class="scorebar">
     <h1>AI Fantasy Football League</h1>
     <span class="headerbtns">
+      <a class="aboutbtn" href="#weekly">Recaps</a>
       <a class="aboutbtn" href="#bylaws">Bylaws</a>
       <a class="aboutbtn" href="#about">About</a>
     </span>
@@ -1202,6 +1267,7 @@ def render(conn: sqlite3.Connection) -> str:
 {_bio_modals(bios)}
 {_ABOUT_MODAL}
 {_bylaws_modal(conn)}
+{_weekly_modal(conn)}
 {_box_modals(conn, season)}
 </body>
 </html>"""

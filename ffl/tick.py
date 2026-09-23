@@ -16,7 +16,7 @@ import random
 import sqlite3
 
 from . import (backup, config, dashboard, data, digest, ghpages, governance,
-               market, playoffs, projections, season, store)
+               market, playoffs, projections, season, store, weeklysummary)
 from . import chat as chatmod
 
 
@@ -47,7 +47,8 @@ def run_tick(conn: sqlite3.Connection, *, sync: bool = True, refresh: bool = Tru
              db_path: str = None, proj_map: dict = None,
              do_playoffs: bool = True, do_midweek: bool = True,
              make_digest: bool = True, do_publish: bool = True,
-             do_governance: bool = True, rng=None) -> dict:
+             do_governance: bool = True, make_weekly: bool = True,
+             rng=None) -> dict:
     """Run one tick. Returns a summary dict.
 
     Params exist mostly for testing: `sync`/`refresh` control real data access,
@@ -128,6 +129,19 @@ def run_tick(conn: sqlite3.Connection, *, sync: bool = True, refresh: bool = Tru
     gov_events = governance.step(conn, rng=rng or random) if do_governance else []
     events.extend(gov_events)
 
+    # Auto-write the weekly recap for any newly-scored week (and backfill past
+    # weeks that lack one). Gated on do_chat so the LLM-free game-day mechanics
+    # ticks don't spend on it; never raises. Cheap when already caught up.
+    weekly = []
+    if make_weekly and do_chat:
+        try:
+            weekly = weeklysummary.ensure_all(conn)
+            if weekly:
+                events.append("wrote weekly recap(s): "
+                              + ", ".join(f"wk{w}" for w in weekly))
+        except Exception as e:  # noqa: BLE001 -- recaps must never crash a tick
+            events.append(f"WARNING: weekly recap failed: {e}")
+
     dash = dashboard.write(conn, dash_path) if make_dashboard else None
 
     # Backups. Crowning a champion is a non-reproducible, high-value event, so
@@ -162,7 +176,7 @@ def run_tick(conn: sqlite3.Connection, *, sync: bool = True, refresh: bool = Tru
     # chat feed, so it triggers a publish too. A no-op unless
     # FFL_GH_DASHBOARD_TOKEN/REPO are configured, and publish() never raises.
     if do_publish and make_dashboard and dash and (
-            advanced or trade_happened or gov_events):
+            advanced or trade_happened or gov_events or weekly):
         pub = ghpages.publish(dash)
         if pub["status"] == "published":
             events.append("dashboard published to GitHub Pages")

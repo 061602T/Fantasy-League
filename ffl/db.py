@@ -191,6 +191,22 @@ CREATE TABLE IF NOT EXISTS team_effects (
 """
 
 
+# Auto-written weekly recaps (ffl/weeklysummary.py). One row per scored league
+# week, holding the same week's story in three voices. Created on every connect()
+# so a live DB picks it up without a re-init.
+_SUMMARIES_DDL = """
+CREATE TABLE IF NOT EXISTS weekly_summaries (
+    season     INTEGER NOT NULL,
+    week       INTEGER NOT NULL,
+    lively     TEXT,           -- readable ESPN-style recap
+    neutral    TEXT,           -- just-the-facts recap
+    roast      TEXT,           -- trash-talk recap (same guardrails as chat)
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (season, week)
+);
+"""
+
+
 def connect(path: str = None) -> sqlite3.Connection:
     """Open a connection with WAL mode, full sync, and foreign keys enforced.
 
@@ -232,6 +248,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # so the additive column patches below can also reach a `bylaws` table that an
     # older governance schema created without the newer columns.
     conn.executescript(_GOVERNANCE_DDL)
+    conn.executescript(_SUMMARIES_DDL)
     existing = {r["name"] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     for table, column, decl in [("teams", "bio", "TEXT"),

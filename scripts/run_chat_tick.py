@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ffl import config, dashboard, db, ghpages, governance, market
+from ffl import config, dashboard, db, ghpages, governance, market, weeklysummary
 from ffl import chat as chatmod
 
 
@@ -101,6 +101,15 @@ def main():
         except Exception as e:  # noqa: BLE001 -- a cron loop shouldn't hard-fail
             print(f"[{stamp}] chat error: {e}", file=sys.stderr)
             posted = []
+
+    # Auto-write any missing weekly recap (a newly-scored week, or a backfill of
+    # earlier weeks). Cheap when caught up; never raises.
+    try:
+        wk = weeklysummary.ensure_all(conn)
+        if wk:
+            events.append("wrote weekly recap(s): " + ", ".join(f"wk{w}" for w in wk))
+    except Exception as e:  # noqa: BLE001 -- must not crash the loop
+        print(f"[{stamp}] weekly recap error: {e}", file=sys.stderr)
 
     for e in events:
         print(f"[{stamp}] {e}")
