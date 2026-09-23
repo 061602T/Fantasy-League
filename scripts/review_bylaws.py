@@ -27,12 +27,16 @@ Enact a passed bylaw as ONE bounded mechanical effect (option C):
         --team "Thee Vibes Only" --weeks 2
     python -m scripts.review_bylaws --effect 7 --type loser_flag \
         --team "Slow News Day" --label "must draft in a clown costume"
+    python -m scripts.review_bylaws --effect 9 --type late_fee \
+        --team "Litigation Nation"   # $5 fee; run again per additional late week
 
 Reject a passed bylaw:
     python -m scripts.review_bylaws --reject 7 --reason "too far, even for us"
 
 Effects and their params (all bounds-checked in ffl/effects.py):
     faab_adjust      --team, --delta      (|delta| <= GOV_FAAB_MAX_DELTA)
+    late_fee         --team               ($GOV_LATE_FEE_AMOUNT/call, cumulative
+                                            cap $GOV_LATE_FEE_SEASON_CAP/team/season)
     trade_freeze     --team, --weeks      (1..GOV_FREEZE_MAX_WEEKS)
     waiver_backseat  --team, --weeks      (1..GOV_BACKSEAT_MAX_WEEKS)
     loser_flag       --team, --label      (label sanitized, <= GOV_LOSER_LABEL_MAX)
@@ -79,8 +83,8 @@ def _print_list(conn):
               f"   (model picks the effect; add --dry-run to preview)")
         print(f"       enact as lore:    review_bylaws --lore {b['bylaw_id']}")
         print(f"       effect by hand:   review_bylaws --effect {b['bylaw_id']} "
-              f"--type <faab_adjust|trade_freeze|waiver_backseat|loser_flag> "
-              f"--team \"<name>\" ...")
+              f"--type <faab_adjust|late_fee|trade_freeze|waiver_backseat|"
+              f"loser_flag> --team \"<name>\" ...")
         print(f"       reject:           review_bylaws --reject {b['bylaw_id']} "
               f"--reason \"...\"")
         print(f"       needs new effect: review_bylaws --draft {b['bylaw_id']}"

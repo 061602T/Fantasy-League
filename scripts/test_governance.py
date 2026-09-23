@@ -59,6 +59,39 @@ def test_faab_bounds():
     print("ok: faab_adjust bounds (non-zero, <=cap delta, no negative, surplus kept)")
 
 
+def test_late_fee_bounds():
+    conn = _seed()
+    ok, _ = effects.validate_effect(conn, "late_fee", 999, {})
+    assert not ok, "unknown team should be rejected"
+
+    ok, msg = effects.apply_effect(conn, "late_fee", 1, {})
+    assert ok and conn.execute("SELECT faab_remaining FROM teams WHERE team_id=1"
+                               ).fetchone()[0] == 95, msg
+    assert "5" in msg
+
+    # Repeated applications accumulate toward the season cap; the 11th (>$50
+    # total at $5 each) is refused, leaving the team's FAAB untouched.
+    for _ in range(9):
+        ok, _ = effects.apply_effect(conn, "late_fee", 1, {})
+        assert ok
+    faab_at_cap = conn.execute("SELECT faab_remaining FROM teams WHERE team_id=1"
+                               ).fetchone()[0]
+    assert faab_at_cap == 50, faab_at_cap
+    ok, err = effects.validate_effect(conn, "late_fee", 1, {})
+    assert not ok and "cap" in err
+    ok, _ = effects.apply_effect(conn, "late_fee", 1, {})
+    assert not ok, "11th late_fee should be refused once the season cap is hit"
+    assert conn.execute("SELECT faab_remaining FROM teams WHERE team_id=1"
+                        ).fetchone()[0] == 50, "refused effect must not change FAAB"
+
+    # Can't go negative even if a team's remaining FAAB is below the fee.
+    conn.execute("UPDATE teams SET faab_remaining=2 WHERE team_id=2")
+    ok, _ = effects.apply_effect(conn, "late_fee", 2, {})
+    assert ok and conn.execute("SELECT faab_remaining FROM teams WHERE team_id=2"
+                               ).fetchone()[0] == 0
+    print("ok: late_fee bounds ($5/call, cumulative season cap, no negative FAAB)")
+
+
 def test_duration_and_loser_bounds():
     conn = _seed()
     for etype in ("trade_freeze", "waiver_backseat"):
@@ -503,6 +536,7 @@ def test_waiver_backseat_ordering():
 
 def main():
     test_faab_bounds()
+    test_late_fee_bounds()
     test_duration_and_loser_bounds()
     test_propose_sanitizes_and_locks()
     test_vote_pass()

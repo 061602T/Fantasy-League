@@ -12,6 +12,10 @@ that doesn't exist.
 What takes effect when:
   * ``faab_adjust`` changes ``teams.faab_remaining`` immediately on enactment
     (clamped), and ``loser_flag`` stores a display flag immediately.
+  * ``late_fee`` also changes ``teams.faab_remaining`` immediately (a fixed,
+    small per-incident deduction) AND records a ``team_effects`` row so the
+    cumulative amount charged this season can be tracked and capped; once a
+    team hits the cap, further attempts are refused by validation.
   * ``trade_freeze`` / ``waiver_backseat`` RECORD their state in ``team_effects``
     with an ``active_through_week``, but the enforcement hooks (skipping a frozen
     team in the trade loop, penalising a back-seated team's waiver ties) are
@@ -97,6 +101,42 @@ def _a_faab(conn, team_id, p, bylaw_id):
     return f"{t['team_name']} FAAB {cur} -> {new} (delta {delta:+d})"
 
 
+# --- effect: late_fee (bounded, cumulative per-season cap) ------------------
+
+def _late_fee_total(conn, team_id) -> int:
+    """$ already charged to this team via late_fee (this DB, i.e. this season --
+    the schema has no season column and the league runs one season per DB)."""
+    rows = conn.execute(
+        "SELECT params_json FROM team_effects WHERE team_id=? AND "
+        "effect_type='late_fee'", (team_id,)).fetchall()
+    return sum(json.loads(r["params_json"]).get("amount", 0) for r in rows)
+
+
+def _v_late_fee(conn, team_id, p):
+    if _team(conn, team_id) is None:
+        return False, "no such team"
+    total = _late_fee_total(conn, team_id)
+    if total + config.GOV_LATE_FEE_AMOUNT > config.GOV_LATE_FEE_SEASON_CAP:
+        return False, (f"season cap reached (${total} of "
+                       f"${config.GOV_LATE_FEE_SEASON_CAP} already charged)")
+    return True, ""
+
+
+def _a_late_fee(conn, team_id, p, bylaw_id):
+    t = _team(conn, team_id)
+    amount = config.GOV_LATE_FEE_AMOUNT
+    cur = t["faab_remaining"]
+    new = max(0, cur - amount)
+    conn.execute("UPDATE teams SET faab_remaining=? WHERE team_id=?", (new, team_id))
+    conn.execute(
+        "INSERT INTO team_effects(team_id, effect_type, params_json, "
+        "active_through_week, bylaw_id) VALUES(?,?,?,?,?)",
+        (team_id, "late_fee", json.dumps({"amount": amount}), None, bylaw_id))
+    total = _late_fee_total(conn, team_id)
+    return (f"{t['team_name']} late-lineup fee: FAAB {cur} -> {new} (-${amount}; "
+            f"${total}/${config.GOV_LATE_FEE_SEASON_CAP} charged this season)")
+
+
 # --- effects: trade_freeze / waiver_backseat (duration) ---------------------
 
 def _v_weeks(max_weeks):
@@ -153,6 +193,7 @@ def _a_loser(conn, team_id, p, bylaw_id):
 #                 apply(conn, team_id, params, bylaw_id)->summary)
 EFFECTS = {
     "faab_adjust":     (_v_faab, _a_faab),
+    "late_fee":        (_v_late_fee, _a_late_fee),
     "trade_freeze":    (_v_weeks(config.GOV_FREEZE_MAX_WEEKS),
                         _a_duration("trade_freeze")),
     "waiver_backseat": (_v_weeks(config.GOV_BACKSEAT_MAX_WEEKS),
@@ -172,6 +213,12 @@ EFFECT_META = {
         "params": {"delta": ("int",
                    f"non-zero integer from -{config.GOV_FAAB_MAX_DELTA} to "
                    f"{config.GOV_FAAB_MAX_DELTA}")},
+    },
+    "late_fee": {
+        "desc": (f"charge one team a ${config.GOV_LATE_FEE_AMOUNT} late-lineup "
+                 f"fee (FAAB), cumulatively capped at "
+                 f"${config.GOV_LATE_FEE_SEASON_CAP} per team per season"),
+        "params": {},
     },
     "trade_freeze": {
         "desc": "bar one team from making trades for a while",
