@@ -107,6 +107,7 @@ GOV_FREEZE_MAX_WEEKS = 3   # trade_freeze duration cap
 GOV_BACKSEAT_MAX_WEEKS = 3 # waiver_backseat duration cap
 GOV_KICKER_FLEX_MAX_WEEKS = 3  # kicker_flex_lock duration cap
 GOV_LOSER_LABEL_MAX = 80   # loser_flag label chars, sanitized
+GOV_LATE_FEE_MAX = 10      # $ per late_fee infraction; transferred payer -> opponent FAAB
 
 # --- Draft-day chatter -----------------------------------------------------
 # Per-pick probability that a notable pick draws live reactions from a few
