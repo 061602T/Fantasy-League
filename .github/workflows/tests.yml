@@ -1,0 +1,46 @@
+name: Tests
+
+# Runs the offline test suites on every pull request and on every push to main
+# or a coding-agent branch (claude/**). This is what makes the agent's PRs
+# self-verifying: the moment it pushes a branch, its own tests (plus the whole
+# offline suite) run here and show a pass/fail check on the PR -- so a green
+# check means "the new effect's tests pass and nothing else broke."
+#
+# Every suite listed below runs with no network and no API key (they stub the
+# LLM and never fetch nflverse), so a red check is a real regression, not flake.
+
+on:
+  pull_request:
+  push:
+    branches: [main, "claude/**"]
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run offline test suites
+        run: |
+          fail=0
+          for f in scripts/test_*.py; do
+            m="scripts.$(basename "$f" .py)"
+            echo "::group::$m"
+            if python -m "$m"; then
+              echo "PASS $m"
+            else
+              echo "::error::$m FAILED"
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "One or more test suites failed."
+            exit 1
+          fi
