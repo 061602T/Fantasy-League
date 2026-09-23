@@ -636,6 +636,69 @@ def test_kicker_flex_lock_enforcement_hook():
           "other teams/weeks unaffected")
 
 
+def test_worst_lineup_lock_forces_worst_lineup():
+    # A roster with real bench slack at the flex-eligible positions (4 RB, 4 WR,
+    # 2 TE for 2+2+1+1(flex) = 6 flex-eligible slots) so "worst" has genuine
+    # low-projection alternatives to start instead of the top players.
+    positions = ["QB", "RB", "RB", "RB", "RB", "WR", "WR", "WR", "WR",
+                "TE", "TE", "K", "DST"]
+    roster, proj = [], 20
+    for pos in positions:
+        roster.append({"player_id": f"{pos}{proj}", "position": pos, "proj": proj})
+        proj -= 1
+    normal = season.optimal_lineup(roster)
+    started_normal = {p for pids in normal.values() for p in pids}
+    assert {"RB19", "RB18", "WR15", "WR14"} <= started_normal, normal
+
+    worst = season.optimal_lineup(roster, force_worst=True)
+    assert worst["QB"] == ["QB20"], "single-eligible slots are unaffected"
+    started_worst = {p for pids in worst.values() for p in pids}
+    assert not {"RB19", "RB18", "WR15", "WR14"} & started_worst, \
+        "the studs must be benched, not started"
+    print("ok: worst_lineup_lock forces the lowest-projected eligible players in")
+
+
+def test_worst_lineup_lock_bounds():
+    conn = _seed()
+    assert not effects.validate_effect(conn, "worst_lineup_lock", 1, {"weeks": 0})[0]
+    assert not effects.validate_effect(
+        conn, "worst_lineup_lock", 1,
+        {"weeks": config.GOV_WORST_LINEUP_MAX_WEEKS + 1})[0]
+    assert not effects.validate_effect(conn, "worst_lineup_lock", 999, {"weeks": 1})[0]
+    ok, _ = effects.apply_effect(conn, "worst_lineup_lock", 1, {"weeks": 1})
+    assert ok
+    # current_week is 1, so a 1-week lock is recorded through week 2.
+    assert effects.active_team_ids(conn, "worst_lineup_lock", 1) == {1}
+    assert effects.active_team_ids(conn, "worst_lineup_lock", 2) == {1}
+    assert effects.active_team_ids(conn, "worst_lineup_lock", 3) == set(), "expired"
+    print("ok: worst_lineup_lock bounds (1..max weeks, unknown team rejected, expires)")
+
+
+def test_worst_lineup_lock_enforcement_hook():
+    conn = _seed()
+    proj_map = {}
+    _seed_mini_roster(conn, 1, "a", proj_map)
+    _seed_mini_roster(conn, 2, "b", proj_map)
+
+    # Before the penalty: the team's best-projected roster starts as usual.
+    lineup = season.set_lineup(conn, 1, 1, proj_map)
+    assert lineup["RB"] == ["a1_RB", "a2_RB"]   # highest-proj RBs, by _seed_mini_roster
+
+    effects.apply_effect(conn, "worst_lineup_lock", 1, {"weeks": 1})   # wk1 -> thru 2
+    locked = season.set_lineup(conn, 1, 1, proj_map)
+    assert locked["RB"] == ["a3_RB", "a2_RB"], locked  # the two lowest-proj RBs
+
+    # An uninvolved team's lineup is untouched.
+    other = season.set_lineup(conn, 2, 1, proj_map)
+    assert other["RB"] == ["b1_RB", "b2_RB"]
+
+    # Expired: back to normal the week after.
+    expired = season.set_lineup(conn, 1, 3, proj_map)
+    assert expired["RB"] == ["a1_RB", "a2_RB"]
+    print("ok: worst_lineup_lock enforcement hook bites in set_lineup, "
+          "other teams/weeks unaffected")
+
+
 def test_chat_mute_blocks_posting():
     conn = _seed()
     effects.apply_effect(conn, "chat_mute", 1, {"weeks": 1})   # wk1 -> through wk2
@@ -686,6 +749,9 @@ def main():
     test_kicker_flex_lock_forces_kicker_to_flex()
     test_kicker_flex_lock_bounds()
     test_kicker_flex_lock_enforcement_hook()
+    test_worst_lineup_lock_forces_worst_lineup()
+    test_worst_lineup_lock_bounds()
+    test_worst_lineup_lock_enforcement_hook()
     test_chat_mute_blocks_posting()
     print("\nALL OFFLINE GOVERNANCE TESTS PASSED")
     return 0

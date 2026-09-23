@@ -29,6 +29,8 @@ Enact a passed bylaw as ONE bounded mechanical effect (option C):
         --team "Slow News Day" --label "must draft in a clown costume"
     python -m scripts.review_bylaws --effect 7 --type kicker_flex_lock \
         --team "Litigation Nation" --weeks 1
+    python -m scripts.review_bylaws --effect 10 --type worst_lineup_lock \
+        --team "Slow News Day" --weeks 1
     python -m scripts.review_bylaws --effect 7 --type chat_mute \
         --team "Litigation Nation" --weeks 1
     python -m scripts.review_bylaws --effect 7 --type late_fee \
@@ -42,6 +44,7 @@ Effects and their params (all bounds-checked in ffl/effects.py):
     trade_freeze      --team, --weeks      (1..GOV_FREEZE_MAX_WEEKS)
     waiver_backseat   --team, --weeks      (1..GOV_BACKSEAT_MAX_WEEKS)
     kicker_flex_lock  --team, --weeks      (1..GOV_KICKER_FLEX_MAX_WEEKS)
+    worst_lineup_lock --team, --weeks      (1..GOV_WORST_LINEUP_MAX_WEEKS)
     chat_mute         --team, --weeks      (1..GOV_CHAT_MUTE_MAX_WEEKS)
     loser_flag        --team, --label      (label sanitized, <= GOV_LOSER_LABEL_MAX)
     late_fee          --team, --opponent, --amount
@@ -91,7 +94,7 @@ def _print_list(conn):
         print(f"       enact as lore:    review_bylaws --lore {b['bylaw_id']}")
         print(f"       effect by hand:   review_bylaws --effect {b['bylaw_id']} "
               f"--type <faab_adjust|trade_freeze|waiver_backseat|"
-              f"kicker_flex_lock|chat_mute|loser_flag|late_fee> "
+              f"kicker_flex_lock|worst_lineup_lock|chat_mute|loser_flag|late_fee> "
               f"--team \"<name>\" ...")
         print(f"       reject:           review_bylaws --reject {b['bylaw_id']} "
               f"--reason \"...\"")
