@@ -517,7 +517,9 @@ _EFFECT_CATALOG = (
     "- trade_freeze: bar one team from making trades for a few weeks.\n"
     "- waiver_backseat: send one team to the back of every waiver tie for a few "
     "weeks.\n"
-    "- loser_flag: attach a display-only shame label to one team.\n")
+    "- loser_flag: attach a display-only shame label to one team.\n"
+    "- chat_mute: revoke one team's league group-chat posting privileges for a "
+    "while.\n")
 
 
 def classify_bylaw(conn, bylaw) -> dict | None:

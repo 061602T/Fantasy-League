@@ -15,13 +15,14 @@ What takes effect when:
   * ``late_fee`` immediately transfers a capped FAAB amount from the offending
     team to a named opponent (floored so the payer never goes negative) and
     records a ``team_effects`` row for the week, for a weekly tally.
-  * ``trade_freeze`` / ``waiver_backseat`` / ``kicker_flex_lock`` RECORD their
-    state in ``team_effects`` with an ``active_through_week``; their enforcement
-    hooks read it back via ``active_team_ids`` -- skipping a frozen team in the
-    trade loop (``ffl/market.py:negotiate``), penalising a back-seated team's
-    waiver ties (``ffl/market.py:_waiver_priority_key``), and forcing a locked
-    team's kicker into FLEX when its weekly lineup is set
-    (``ffl/season.py:set_lineup``).
+  * ``trade_freeze`` / ``waiver_backseat`` / ``kicker_flex_lock`` / ``chat_mute``
+    RECORD their state in ``team_effects`` with an ``active_through_week``; their
+    enforcement hooks read it back via ``active_team_ids`` -- skipping a frozen
+    team in the trade loop (``ffl/market.py:negotiate``), penalising a
+    back-seated team's waiver ties (``ffl/market.py:_waiver_priority_key``),
+    forcing a locked team's kicker into FLEX when its weekly lineup is set
+    (``ffl/season.py:set_lineup``), and silencing a muted team in group chat
+    (``ffl/chat.py``).
 
 The model never reaches this code: a GM's bylaw is free text, and the
 commissioner -- a human -- chooses which effect (if any) to apply. This module
@@ -208,6 +209,8 @@ EFFECTS = {
                         _a_duration("waiver_backseat")),
     "kicker_flex_lock": (_v_weeks(config.GOV_KICKER_FLEX_MAX_WEEKS),
                         _a_duration("kicker_flex_lock")),
+    "chat_mute":       (_v_weeks(config.GOV_CHAT_MUTE_MAX_WEEKS),
+                        _a_duration("chat_mute")),
     "loser_flag":      (_v_loser, _a_loser),
     "late_fee":        (_v_late_fee, _a_late_fee),
 }
@@ -240,6 +243,10 @@ EFFECT_META = {
     "loser_flag": {
         "desc": "attach a display-only shame label to one team",
         "params": {"label": ("str", "short text label")},
+    },
+    "chat_mute": {
+        "desc": "revoke one team's league group-chat posting privileges for a while",
+        "params": {"weeks": ("int", f"integer 1 to {config.GOV_CHAT_MUTE_MAX_WEEKS}")},
     },
     "late_fee": {
         "desc": "fine one team a capped amount, paid directly to a named "
