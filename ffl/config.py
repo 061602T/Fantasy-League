@@ -106,6 +106,11 @@ GOV_FAAB_MAX_DELTA = 50    # |delta| per faab_adjust; result clamped to [0, max(
 GOV_FREEZE_MAX_WEEKS = 3   # trade_freeze duration cap
 GOV_BACKSEAT_MAX_WEEKS = 3 # waiver_backseat duration cap
 GOV_LOSER_LABEL_MAX = 80   # loser_flag label chars, sanitized
+# chat_mute duration cap. The bylaw calls for a single 24-hour restriction per
+# violation; the governance system's finest enactable grain is a week (it only
+# advances `current_week` when an NFL week completes), so this stays capped at
+# exactly one -- the shortest, least-severe duration the toolbox can express.
+GOV_CHAT_MUTE_MAX_WEEKS = 1
 GOV_LATE_FEE_MAX = 10      # $ per late_fee infraction; transferred payer -> opponent FAAB
 
 # --- Draft-day chatter -----------------------------------------------------
