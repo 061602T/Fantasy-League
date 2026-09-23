@@ -111,6 +111,7 @@ GOV_LOSER_LABEL_MAX = 80   # loser_flag label chars, sanitized
 # advances `current_week` when an NFL week completes), so this stays capped at
 # exactly one -- the shortest, least-severe duration the toolbox can express.
 GOV_CHAT_MUTE_MAX_WEEKS = 1
+GOV_LATE_FEE_MAX = 10      # $ per late_fee infraction; transferred payer -> opponent FAAB
 
 # --- Draft-day chatter -----------------------------------------------------
 # Per-pick probability that a notable pick draws live reactions from a few

@@ -12,6 +12,9 @@ that doesn't exist.
 What takes effect when:
   * ``faab_adjust`` changes ``teams.faab_remaining`` immediately on enactment
     (clamped), and ``loser_flag`` stores a display flag immediately.
+  * ``late_fee`` immediately transfers a capped FAAB amount from the offending
+    team to a named opponent (floored so the payer never goes negative) and
+    records a ``team_effects`` row for the week, for a weekly tally.
   * ``trade_freeze`` / ``waiver_backseat`` / ``chat_mute`` RECORD their state in
     ``team_effects`` with an ``active_through_week``; their enforcement hooks
     (skipping a frozen team in the trade loop, penalising a back-seated team's
@@ -147,6 +150,50 @@ def _a_loser(conn, team_id, p, bylaw_id):
     return f'{t["team_name"]} loser flag: "{label}"'
 
 
+# --- effect: late_fee (immediate, two-team transfer) ------------------------
+
+def _v_late_fee(conn, team_id, p):
+    if _team(conn, team_id) is None:
+        return False, "no such team"
+    opp_name = str(p.get("opponent", "")).strip()
+    if not opp_name:
+        return False, "opponent required"
+    opp_id = team_id_by_name(conn, opp_name)
+    if opp_id is None:
+        return False, f"no such opponent team {opp_name!r}"
+    if opp_id == team_id:
+        return False, "opponent must be a different team"
+    try:
+        amount = int(p["amount"])
+    except (KeyError, TypeError, ValueError):
+        return False, "amount must be an integer"
+    if not (1 <= amount <= config.GOV_LATE_FEE_MAX):
+        return False, f"amount must be between 1 and {config.GOV_LATE_FEE_MAX}"
+    return True, ""
+
+
+def _a_late_fee(conn, team_id, p, bylaw_id):
+    t = _team(conn, team_id)
+    opp_id = team_id_by_name(conn, str(p["opponent"]).strip())
+    opp = _team(conn, opp_id)
+    amount = int(p["amount"])
+    # Cap the transfer at what the payer actually has -- a fine can never push
+    # the payer's FAAB negative (same floor rule as faab_adjust).
+    paid = max(0, min(amount, t["faab_remaining"]))
+    conn.execute("UPDATE teams SET faab_remaining=faab_remaining-? WHERE team_id=?",
+                (paid, team_id))
+    conn.execute("UPDATE teams SET faab_remaining=faab_remaining+? WHERE team_id=?",
+                (paid, opp_id))
+    conn.execute(
+        "INSERT INTO team_effects(team_id, effect_type, params_json, "
+        "active_through_week, bylaw_id) VALUES(?,?,?,?,?)",
+        (team_id, "late_fee",
+         json.dumps({"opponent_team_id": opp_id, "amount": paid}),
+         _current_week(conn), bylaw_id))
+    capped = " (capped, payer had less)" if paid < amount else ""
+    return f"{t['team_name']} pays a ${paid} late fee to {opp['team_name']}{capped}"
+
+
 # --- registry ---------------------------------------------------------------
 
 # effect_type -> (validate(conn, team_id, params)->(ok,err),
@@ -157,9 +204,10 @@ EFFECTS = {
                         _a_duration("trade_freeze")),
     "waiver_backseat": (_v_weeks(config.GOV_BACKSEAT_MAX_WEEKS),
                         _a_duration("waiver_backseat")),
-    "loser_flag":      (_v_loser, _a_loser),
     "chat_mute":       (_v_weeks(config.GOV_CHAT_MUTE_MAX_WEEKS),
                         _a_duration("chat_mute")),
+    "loser_flag":      (_v_loser, _a_loser),
+    "late_fee":        (_v_late_fee, _a_late_fee),
 }
 
 # Human/model-facing metadata for each effect, used by the commissioner's
@@ -190,6 +238,14 @@ EFFECT_META = {
     "chat_mute": {
         "desc": "revoke one team's league group-chat posting privileges for a while",
         "params": {"weeks": ("int", f"integer 1 to {config.GOV_CHAT_MUTE_MAX_WEEKS}")},
+    },
+    "late_fee": {
+        "desc": "fine one team a capped amount, paid directly to a named "
+                "opponent (e.g. a late-lineup fee)",
+        "params": {
+            "opponent": ("str", "opposing team name that receives the fee"),
+            "amount": ("int", f"integer 1 to {config.GOV_LATE_FEE_MAX}"),
+        },
     },
 }
 
