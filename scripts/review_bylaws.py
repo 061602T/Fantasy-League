@@ -27,6 +27,8 @@ Enact a passed bylaw as ONE bounded mechanical effect (option C):
         --team "Thee Vibes Only" --weeks 2
     python -m scripts.review_bylaws --effect 7 --type loser_flag \
         --team "Slow News Day" --label "must draft in a clown costume"
+    python -m scripts.review_bylaws --effect 7 --type kicker_flex_lock \
+        --team "Litigation Nation" --weeks 1
     python -m scripts.review_bylaws --effect 7 --type chat_mute \
         --team "Litigation Nation" --weeks 1
     python -m scripts.review_bylaws --effect 7 --type late_fee \
@@ -36,14 +38,15 @@ Reject a passed bylaw:
     python -m scripts.review_bylaws --reject 7 --reason "too far, even for us"
 
 Effects and their params (all bounds-checked in ffl/effects.py):
-    faab_adjust      --team, --delta      (|delta| <= GOV_FAAB_MAX_DELTA)
-    trade_freeze     --team, --weeks      (1..GOV_FREEZE_MAX_WEEKS)
-    waiver_backseat  --team, --weeks      (1..GOV_BACKSEAT_MAX_WEEKS)
-    loser_flag       --team, --label      (label sanitized, <= GOV_LOSER_LABEL_MAX)
-    chat_mute        --team, --weeks      (1..GOV_CHAT_MUTE_MAX_WEEKS)
-    late_fee         --team, --opponent, --amount
-                     (--team pays --opponent; 1 <= amount <= GOV_LATE_FEE_MAX;
-                     transferred as FAAB, floored so the payer never goes negative)
+    faab_adjust       --team, --delta      (|delta| <= GOV_FAAB_MAX_DELTA)
+    trade_freeze      --team, --weeks      (1..GOV_FREEZE_MAX_WEEKS)
+    waiver_backseat   --team, --weeks      (1..GOV_BACKSEAT_MAX_WEEKS)
+    kicker_flex_lock  --team, --weeks      (1..GOV_KICKER_FLEX_MAX_WEEKS)
+    chat_mute         --team, --weeks      (1..GOV_CHAT_MUTE_MAX_WEEKS)
+    loser_flag        --team, --label      (label sanitized, <= GOV_LOSER_LABEL_MAX)
+    late_fee          --team, --opponent, --amount
+                      (--team pays --opponent; 1 <= amount <= GOV_LATE_FEE_MAX;
+                      transferred as FAAB, floored so the payer never goes negative)
 """
 import argparse
 import json
@@ -87,8 +90,9 @@ def _print_list(conn):
               f"   (model picks the effect; add --dry-run to preview)")
         print(f"       enact as lore:    review_bylaws --lore {b['bylaw_id']}")
         print(f"       effect by hand:   review_bylaws --effect {b['bylaw_id']} "
-              f"--type <faab_adjust|trade_freeze|waiver_backseat|loser_flag|"
-              f"chat_mute|late_fee> --team \"<name>\" ...")
+              f"--type <faab_adjust|trade_freeze|waiver_backseat|"
+              f"kicker_flex_lock|chat_mute|loser_flag|late_fee> "
+              f"--team \"<name>\" ...")
         print(f"       reject:           review_bylaws --reject {b['bylaw_id']} "
               f"--reason \"...\"")
         print(f"       needs new effect: review_bylaws --draft {b['bylaw_id']}"

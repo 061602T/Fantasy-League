@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ffl import chat, config, db, effects, governance, market
+from ffl import chat, config, db, effects, governance, market, season
 
 _CHATTINESS = ["trash-talker", "moderate", "quiet", "moderate",
                "quiet", "moderate", "trash-talker", "quiet"]
@@ -61,7 +61,7 @@ def test_faab_bounds():
 
 def test_duration_and_loser_bounds():
     conn = _seed()
-    for etype in ("trade_freeze", "waiver_backseat"):
+    for etype in ("trade_freeze", "waiver_backseat", "kicker_flex_lock"):
         assert not effects.validate_effect(conn, etype, 1, {"weeks": 0})[0]
         assert not effects.validate_effect(conn, etype, 1, {"weeks": 4})[0]
         ok, _ = effects.apply_effect(conn, etype, 1, {"weeks": 2}, bylaw_id=None)
@@ -69,7 +69,7 @@ def test_duration_and_loser_bounds():
     rows = conn.execute("SELECT effect_type, active_through_week FROM team_effects "
                         "WHERE team_id=1 ORDER BY effect_id").fetchall()
     # current_week is 1, so a 2-week duration is recorded through week 3.
-    assert [r["active_through_week"] for r in rows] == [3, 3], rows
+    assert [r["active_through_week"] for r in rows] == [3, 3, 3], rows
 
     assert not effects.validate_effect(conn, "loser_flag", 1, {"label": "   "})[0]
     ok, _ = effects.apply_effect(conn, "loser_flag", 2,
@@ -558,6 +558,84 @@ def test_waiver_backseat_ordering():
     print("ok: waiver_backseat loses ties but not higher bids")
 
 
+# --- kicker_flex_lock (Bylaw #5: Litigation Nation Lineup Lockout Act) ------
+
+_MINI_ROSTER = ["QB", "RB", "RB", "RB", "WR", "WR", "TE", "K", "DST"]
+
+
+def test_kicker_flex_lock_forces_kicker_to_flex():
+    # Pure optimal_lineup: the RB slot takes the top 2 RBs (RB19, RB18), so
+    # without the lock RB17 is the best remaining flex-eligible player. With the
+    # lock, the kicker must occupy FLEX instead, and K sits empty rather than
+    # falling back to anyone else.
+    roster, proj = [], 20
+    for pos in _MINI_ROSTER:
+        roster.append({"player_id": f"{pos}{proj}", "position": pos, "proj": proj})
+        proj -= 1
+    normal = season.optimal_lineup(roster)
+    assert normal["K"] == ["K13"] and normal["FLEX"] == ["RB17"]
+
+    locked = season.optimal_lineup(roster, force_kicker_flex=True)
+    assert locked["K"] == [], "K slot must sit empty under the lockout"
+    assert locked["FLEX"] == ["K13"], "kicker must occupy FLEX, displacing RB17"
+    started = {p for pids in locked.values() for p in pids}
+    assert "RB17" not in started, "the bumped flex player is benched, not re-slotted"
+    print("ok: kicker_flex_lock forces the kicker into FLEX and empties K")
+
+
+def test_kicker_flex_lock_bounds():
+    conn = _seed()
+    assert not effects.validate_effect(conn, "kicker_flex_lock", 1, {"weeks": 0})[0]
+    assert not effects.validate_effect(
+        conn, "kicker_flex_lock", 1,
+        {"weeks": config.GOV_KICKER_FLEX_MAX_WEEKS + 1})[0]
+    assert not effects.validate_effect(conn, "kicker_flex_lock", 999, {"weeks": 1})[0]
+    ok, _ = effects.apply_effect(conn, "kicker_flex_lock", 1, {"weeks": 1})
+    assert ok
+    # current_week is 1, so a 1-week lock is recorded through week 2.
+    assert effects.active_team_ids(conn, "kicker_flex_lock", 1) == {1}
+    assert effects.active_team_ids(conn, "kicker_flex_lock", 2) == {1}
+    assert effects.active_team_ids(conn, "kicker_flex_lock", 3) == set(), "expired"
+    print("ok: kicker_flex_lock bounds (1..max weeks, unknown team rejected, expires)")
+
+
+def _seed_mini_roster(conn, team_id, prefix, proj_map):
+    for i, pos in enumerate(_MINI_ROSTER):
+        pid = f"{prefix}{i}_{pos}"
+        conn.execute("INSERT INTO players(player_id, name, position) VALUES(?,?,?)",
+                     (pid, pid, pos))
+        conn.execute(
+            "INSERT INTO rosters(team_id, player_id, acquired_via, acquired_week) "
+            "VALUES(?,?, 'draft', 0)", (team_id, pid))
+        proj_map[pid] = 50 - i
+    conn.commit()
+
+
+def test_kicker_flex_lock_enforcement_hook():
+    conn = _seed()
+    proj_map = {}
+    _seed_mini_roster(conn, 1, "a", proj_map)
+    _seed_mini_roster(conn, 2, "b", proj_map)
+
+    # Before the "formal dispute": kicker starts at K as usual.
+    lineup = season.set_lineup(conn, 1, 1, proj_map)
+    assert lineup["K"] == ["a7_K"] and "a7_K" not in lineup["FLEX"]
+
+    effects.apply_effect(conn, "kicker_flex_lock", 1, {"weeks": 1})   # wk1 -> through 2
+    locked = season.set_lineup(conn, 1, 1, proj_map)
+    assert locked["K"] == [] and locked["FLEX"] == ["a7_K"]
+
+    # An uninvolved team's lineup is untouched.
+    other = season.set_lineup(conn, 2, 1, proj_map)
+    assert other["K"] == ["b7_K"]
+
+    # Expired: back to normal the week after.
+    expired = season.set_lineup(conn, 1, 3, proj_map)
+    assert expired["K"] == ["a7_K"]
+    print("ok: kicker_flex_lock enforcement hook bites in set_lineup, "
+          "other teams/weeks unaffected")
+
+
 def test_chat_mute_blocks_posting():
     conn = _seed()
     effects.apply_effect(conn, "chat_mute", 1, {"weeks": 1})   # wk1 -> through wk2
@@ -605,6 +683,9 @@ def main():
     test_tick_step_never_raises()
     test_active_window_and_freeze_blocks_trades()
     test_waiver_backseat_ordering()
+    test_kicker_flex_lock_forces_kicker_to_flex()
+    test_kicker_flex_lock_bounds()
+    test_kicker_flex_lock_enforcement_hook()
     test_chat_mute_blocks_posting()
     print("\nALL OFFLINE GOVERNANCE TESTS PASSED")
     return 0
