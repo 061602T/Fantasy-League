@@ -49,13 +49,18 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - uses: anthropics/claude-code-action@v1
+        env:
+          # Authenticate the gh CLI so the agent can open the PR itself (step 6
+          # of the brief). github.token carries the job's pull-requests: write.
+          GH_TOKEN: ${{ github.token }}
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          # Additively allow the agent to run Python (its own tests) without an
-          # approval prompt. `settings` ADDS to the permission allowlist and
-          # leaves the action's built-in edit/git tools untouched.
+          # Additively allow the agent to run Python (its own tests) and the gh
+          # CLI (to open the PR) without an approval prompt. `settings` ADDS to
+          # the permission allowlist and leaves the action's built-in edit/git
+          # tools untouched.
           settings: |
-            {"permissions": {"allow": ["Bash(python:*)", "Bash(python3:*)", "Bash(pip:*)"]}}
+            {"permissions": {"allow": ["Bash(python:*)", "Bash(python3:*)", "Bash(pip:*)", "Bash(gh:*)"]}}
           claude_args: |
             --max-turns 150
             --model claude-sonnet-5

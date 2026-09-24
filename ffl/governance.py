@@ -446,6 +446,11 @@ and validated -- no free-form execution, no arbitrary SQL.
 within range) and, if there is an enforcement hook, a test that it bites.
 5. Run `python -m scripts.test_governance` and the offline suites for any file \
 you touched; all must pass.
+6. Commit your work to the branch, then OPEN THE PULL REQUEST YOURSELF by \
+running `gh pr create --base main --title "..." --body "..."` (the runner has \
+the gh CLI authenticated). Do NOT stop at a "Create PR" link and do NOT merge -- \
+the commissioner reviews and merges. In the PR body, reference this issue with \
+"Closes #<this issue number>".
 
 When merged and pulled on the Pi, the commissioner enacts it with:
   python -m scripts.review_bylaws --effect {id} --type <name> --team "<team>" ...
