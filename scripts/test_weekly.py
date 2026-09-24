@@ -23,6 +23,21 @@ def _seed(scored=True):
     # A little group chat for flavor.
     conn.execute("INSERT INTO chat_log(team_id, event_type, message) "
                  "VALUES(1,'trash_talk','easy work this week')")
+    # Decisions the GMs made this week: a trade, a waiver claim, a bylaw.
+    conn.execute("INSERT INTO players(player_id,name,position) VALUES"
+                 "('p1','Alpha Back','RB'),('p2','Bravo Wideout','WR')")
+    conn.execute(
+        "INSERT INTO transactions(type,status,from_team_id,to_team_id,"
+        "details_json,resolved_at) VALUES('trade','accepted',1,2,?,datetime('now'))",
+        ('{"a_gives":["p1"],"b_gives":["p2"]}',))
+    conn.execute(
+        "INSERT INTO transactions(type,status,to_team_id,faab_bid,details_json,"
+        "resolved_at) VALUES('waiver_claim','processed',3,7,?,datetime('now'))",
+        ('{"add":"p2","week":1}',))
+    conn.execute(
+        "INSERT INTO bylaws(proposer_team_id,title,status,votes_open_at,"
+        "votes_close_at,tally_json,resolved_at) VALUES(1,'No Punting Fridays',"
+        "'enacted_lore','x','y',?,datetime('now'))", ('{"yes":6,"no":1}',))
     if scored:
         # Week 1: four final matchups, odd teams beat even teams.
         for i, (h, a) in enumerate([(1, 2), (3, 4), (5, 6), (7, 8)]):
@@ -35,21 +50,42 @@ def _seed(scored=True):
 
 
 def _fake_llm(system, user, **k):
-    # Assert the real data was fed in, then return the three voices.
-    assert "FINAL SCORES" in user and "Team 1 def. Team 2" in user, user[:200]
+    # Assert the real data was fed in (GM names, not team names), then return
+    # the three voices.
+    assert "FINAL SCORES" in user and "GM 1 def. GM 2" in user, user[:200]
     assert "STANDINGS NOW" in user
+    assert "Team 1" not in user, "recap should use GM names, not team names"
+    assert "TRADES THE GMs MADE" in user and "WAIVER MOVES" in user
     return {"lively": "Lively recap of the week.",
-            "neutral": "Team 1 beat Team 2.",
-            "roast": "Team 8 got absolutely smoked."}
+            "neutral": "GM 1 beat GM 2.",
+            "roast": "GM 8 got absolutely smoked."}
 
 
 def test_gather_pulls_scores_and_standings():
     conn = _seed()
     g = weeklysummary.gather(conn, 1, config.SEASON)
-    assert any("Team 1 def. Team 2" in r for r in g["results"]), g["results"]
+    assert any("GM 1 def. GM 2" in r for r in g["results"]), g["results"]
     assert len(g["results"]) == 4 and g["standings"]
     assert g["chat"], "recent chat should be gathered"
-    print("ok: gather pulls the week's scores, standings, and chat")
+    # Standings and chat are keyed by GM name, not team name.
+    assert any("GM 1" in s for s in g["standings"])
+    assert not any("Team " in s for s in g["standings"]), g["standings"]
+    print("ok: gather pulls the week's scores, standings, and chat by GM name")
+
+
+def test_gather_pulls_decisions():
+    conn = _seed()
+    g = weeklysummary.gather(conn, 1, config.SEASON)
+    # Trade: GM 1 sent Alpha Back to GM 2 for Bravo Wideout.
+    assert g["trades"] and "GM 1 sent Alpha Back to GM 2 for Bravo Wideout" \
+        in g["trades"][0], g["trades"]
+    # Waiver: GM 3 won Bravo Wideout for $7 this week.
+    assert g["waivers"] and "GM 3 won Bravo Wideout" in g["waivers"][0] \
+        and "$7" in g["waivers"][0], g["waivers"]
+    # Bylaw: proposer named, vote tally, outcome.
+    assert g["bylaws"] and 'GM 1 proposed "No Punting Fridays"' in g["bylaws"][0] \
+        and "6-1" in g["bylaws"][0], g["bylaws"]
+    print("ok: gather pulls trades, waivers, and bylaws keyed to GM names")
 
 
 def test_generate_stores_three_voices_idempotent():
@@ -84,7 +120,7 @@ def test_dashboard_modal_renders_switcher():
     modal = dashboard._weekly_modal(conn)
     assert "id='weekly'" in modal and "Week 1" in modal
     assert "Lively recap of the week." in modal
-    assert "Team 8 got absolutely smoked." in modal
+    assert "GM 8 got absolutely smoked." in modal
     # The pure-CSS voice switcher is present (radios + labelled tabs + panels).
     assert "wr-tabs" in modal and "wr-p-l" in modal and "wr-p-r" in modal
     assert modal.count("type='radio'") == 3
@@ -95,6 +131,7 @@ def test_dashboard_modal_renders_switcher():
 
 def main():
     test_gather_pulls_scores_and_standings()
+    test_gather_pulls_decisions()
     test_generate_stores_three_voices_idempotent()
     test_generate_skips_unscored_week()
     test_ensure_all_backfills_then_noops()
