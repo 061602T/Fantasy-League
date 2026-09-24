@@ -51,13 +51,40 @@ def _player_names(conn, ids) -> dict:
     return {r["player_id"]: r["name"] for r in conn.execute(q, ids)}
 
 
-def _prior_created_at(conn, season, week):
-    """created_at of the most recent EARLIER week's recap, to scope 'new' bylaws
-    and the trades/waivers/votes that happened since it."""
+def _week_window(conn, season, week) -> tuple:
+    """The [start, end) timestamps that bound one league week's story, anchored
+    to when weeks were actually SCORED -- not when recaps were written (those can
+    all share a timestamp if recaps were backfilled in one pass).
+
+    start = when this week was scored (earliest player_weekly_scores.computed_at
+    for the week); end = when the NEXT scored week was scored (None if this is
+    the latest). Everything the GMs said and did in that window -- reactions,
+    trades, waiver moves, bylaw votes -- is this week's material. A week that
+    isn't scored yet returns (None, None), i.e. no bound.
+    """
     row = conn.execute(
-        "SELECT created_at FROM weekly_summaries WHERE season=? AND week<? "
-        "ORDER BY week DESC LIMIT 1", (season, week)).fetchone()
-    return row["created_at"] if row else None
+        "SELECT MIN(computed_at) c FROM player_weekly_scores "
+        "WHERE season=? AND week=?", (season, week)).fetchone()
+    start = row["c"] if row else None
+    end = None
+    if start:
+        nxt = conn.execute(
+            "SELECT MIN(computed_at) c FROM player_weekly_scores "
+            "WHERE season=? AND week>?", (season, week)).fetchone()
+        end = nxt["c"] if nxt and nxt["c"] else None
+    return start, end
+
+
+def _window_sql(col, start, end) -> tuple:
+    """A ' AND <col> >= ? AND <col> < ?' fragment (+ params) for [start, end)."""
+    frag, params = "", []
+    if start:
+        frag += f" AND {col} >= ?"
+        params.append(start)
+    if end:
+        frag += f" AND {col} < ?"
+        params.append(end)
+    return frag, params
 
 
 def gather(conn: sqlite3.Connection, week: int, season: int) -> dict:
@@ -91,23 +118,23 @@ def gather(conn: sqlite3.Connection, week: int, season: int) -> dict:
                      "SELECT team_id, wins, losses, ties, points_for FROM teams "
                      "ORDER BY wins DESC, points_for DESC"), 1)]
 
-    # Recent group chat (GM banter only -- skip system/bylaw log lines), oldest
-    # first, keyed by GM name. This is the heart of the recap, so pull a generous
-    # slice.
+    start, end = _week_window(conn, season, week)
+
+    # Group chat from THIS WEEK's window only (GM banter -- skip system/bylaw log
+    # lines), oldest first, keyed by GM name. This is the heart of the recap.
+    cfrag, cps = _window_sql("c.created_at", start, end)
     chat = [f"{names.get(r['team_id']) or 'League'}: {r['message']}"
             for r in reversed(conn.execute(
                 "SELECT c.team_id, c.message FROM chat_log c "
-                "WHERE c.team_id IS NOT NULL AND c.event_type!='bylaw' "
-                "ORDER BY c.chat_id DESC LIMIT 60").fetchall())]
+                "WHERE c.team_id IS NOT NULL AND c.event_type!='bylaw'" + cfrag
+                + " ORDER BY c.chat_id DESC LIMIT 60", cps).fetchall())]
 
-    since = _prior_created_at(conn, season, week)
-
-    # Trades the GMs agreed to since the last recap -- a real decision each made.
+    # Trades the GMs agreed to during this week's window -- a real decision each made.
     trades = []
+    tfrag, tps = _window_sql("resolved_at", start, end)
     tq = ("SELECT from_team_id, to_team_id, details_json FROM transactions "
-          "WHERE type='trade' AND status='accepted'"
-          + (" AND resolved_at > ?" if since else "") + " ORDER BY txn_id")
-    for tx in conn.execute(tq, (since,) if since else ()):
+          "WHERE type='trade' AND status='accepted'" + tfrag + " ORDER BY txn_id")
+    for tx in conn.execute(tq, tps):
         try:
             d = json.loads(tx["details_json"] or "{}")
         except Exception:  # noqa: BLE001
@@ -141,14 +168,13 @@ def gather(conn: sqlite3.Connection, week: int, season: int) -> dict:
             line += f" (dropped {pm.get(d.get('drop'),'a player')})"
         waivers.append(line)
 
-    # Bylaws resolved since the last recap -- who proposed each, the vote, outcome.
+    # Bylaws resolved during this week's window -- who proposed each, the vote,
+    # the outcome.
+    bfrag, params = _window_sql("resolved_at", start, end)
     bylaw_q = ("SELECT proposer_team_id, title, status, tally_json FROM bylaws "
                "WHERE resolved_at IS NOT NULL AND status IN ('passed_pending',"
-               "'enacted_lore','enacted_effect','rejected_vote','rejected_admin')")
-    params = ()
-    if since:
-        bylaw_q += " AND resolved_at > ?"
-        params = (since,)
+               "'enacted_lore','enacted_effect','rejected_vote','rejected_admin')"
+               + bfrag)
     outcome = {"passed_pending": "passed (awaiting the commissioner)",
                "enacted_lore": "passed and enacted as a league rule",
                "enacted_effect": "passed and enacted with a penalty",
@@ -251,10 +277,14 @@ def scored_weeks(conn) -> list[int]:
 
 
 def ensure_all(conn: sqlite3.Connection, *, season: int = None,
-               chat_json=None) -> list[int]:
+               chat_json=None, force: bool = False) -> list[int]:
     """Write recaps for every scored week that doesn't have one yet (auto-weekly +
     backfill). Cheap when caught up (a couple of SELECTs, no model call). Never
-    raises. Returns the weeks written."""
+    raises. Returns the weeks written.
+
+    With ``force=True`` every scored week is REWRITTEN (one model call each),
+    overwriting the stored recaps -- used to re-render past weeks in a new style.
+    The default (force=False) is what a tick calls, so idle ticks stay free."""
     season = season or config.SEASON
     written = []
     try:
@@ -263,7 +293,7 @@ def ensure_all(conn: sqlite3.Connection, *, season: int = None,
         return written
     for wk in weeks:
         try:
-            if generate(conn, wk, season=season, chat_json=chat_json):
+            if generate(conn, wk, season=season, chat_json=chat_json, force=force):
                 written.append(wk)
         except Exception:  # noqa: BLE001 -- one bad week must not block the rest
             continue

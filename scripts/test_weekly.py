@@ -20,24 +20,28 @@ def _seed(scored=True):
                      "draft_slot,wins,losses,points_for) VALUES(?,?,?,?,?,?,?,?)",
                      (s, f"Team {s}", f"GM {s}", "moderate", s,
                       1 if s % 2 else 0, 0 if s % 2 else 1, 120 - s))
-    # A little group chat for flavor.
-    conn.execute("INSERT INTO chat_log(team_id, event_type, message) "
-                 "VALUES(1,'trash_talk','easy work this week')")
-    # Decisions the GMs made this week: a trade, a waiver claim, a bylaw.
     conn.execute("INSERT INTO players(player_id,name,position) VALUES"
                  "('p1','Alpha Back','RB'),('p2','Bravo Wideout','WR')")
+    # Group chat: one line inside week 1's window, one inside week 2's. The recap
+    # for a week must pull only its own window (see _week_window: weeks are bounded
+    # by when they were scored, below).
+    conn.execute("INSERT INTO chat_log(team_id,event_type,message,created_at) "
+                 "VALUES(1,'trash_talk','easy work this week','2026-01-02 00:00:00')")
+    conn.execute("INSERT INTO chat_log(team_id,event_type,message,created_at) "
+                 "VALUES(2,'trash_talk','week two chatter','2026-01-10 00:00:00')")
+    # Decisions inside week 1's window: a trade, a waiver claim, a bylaw.
     conn.execute(
         "INSERT INTO transactions(type,status,from_team_id,to_team_id,"
-        "details_json,resolved_at) VALUES('trade','accepted',1,2,?,datetime('now'))",
-        ('{"a_gives":["p1"],"b_gives":["p2"]}',))
+        "details_json,resolved_at) VALUES('trade','accepted',1,2,?,"
+        "'2026-01-02 00:00:00')", ('{"a_gives":["p1"],"b_gives":["p2"]}',))
     conn.execute(
         "INSERT INTO transactions(type,status,to_team_id,faab_bid,details_json,"
-        "resolved_at) VALUES('waiver_claim','processed',3,7,?,datetime('now'))",
+        "resolved_at) VALUES('waiver_claim','processed',3,7,?,'2026-01-02 00:00:00')",
         ('{"add":"p2","week":1}',))
     conn.execute(
         "INSERT INTO bylaws(proposer_team_id,title,status,votes_open_at,"
         "votes_close_at,tally_json,resolved_at) VALUES(1,'No Punting Fridays',"
-        "'enacted_lore','x','y',?,datetime('now'))", ('{"yes":6,"no":1}',))
+        "'enacted_lore','x','y',?,'2026-01-02 00:00:00')", ('{"yes":6,"no":1}',))
     if scored:
         # Week 1: four final matchups, odd teams beat even teams.
         for i, (h, a) in enumerate([(1, 2), (3, 4), (5, 6), (7, 8)]):
@@ -45,6 +49,13 @@ def _seed(scored=True):
                 "INSERT INTO matchups(week,home_team_id,away_team_id,home_points,"
                 "away_points,winner_team_id,status) VALUES(1,?,?,?,?,?, 'final')",
                 (h, a, 130.0 - i, 95.0 - i, h))
+        # When each week was scored -- bounds week 1's window to [01-01, 01-08).
+        conn.execute("INSERT INTO player_weekly_scores(player_id,season,week,"
+                     "fantasy_points,computed_at) VALUES('p1',?,1,10.0,"
+                     "'2026-01-01 00:00:00')", (config.SEASON,))
+        conn.execute("INSERT INTO player_weekly_scores(player_id,season,week,"
+                     "fantasy_points,computed_at) VALUES('p1',?,2,10.0,"
+                     "'2026-01-08 00:00:00')", (config.SEASON,))
     conn.commit()
     return conn
 
@@ -88,6 +99,17 @@ def test_gather_pulls_decisions():
     print("ok: gather pulls trades, waivers, and bylaws keyed to GM names")
 
 
+def test_gather_windows_chat_by_week():
+    conn = _seed()
+    g1 = " ".join(weeklysummary.gather(conn, 1, config.SEASON)["chat"])
+    assert "easy work this week" in g1, g1
+    assert "week two chatter" not in g1, "week 1's recap must not pull week 2's chat"
+    # The week-2 line lands in week 2's window (its score time onward), not week 1's.
+    g2 = " ".join(weeklysummary.gather(conn, 2, config.SEASON)["chat"])
+    assert "week two chatter" in g2 and "easy work this week" not in g2, g2
+    print("ok: gather scopes chat strictly to each week's window")
+
+
 def test_generate_stores_three_voices_idempotent():
     conn = _seed()
     assert weeklysummary.generate(conn, 1, chat_json=_fake_llm) is True
@@ -114,6 +136,22 @@ def test_ensure_all_backfills_then_noops():
     print("ok: ensure_all backfills scored weeks then no-ops")
 
 
+def test_ensure_all_force_rewrites():
+    conn = _seed()
+    assert weeklysummary.ensure_all(conn, chat_json=_fake_llm) == [1]
+    calls = {"n": 0}
+
+    def _v2(system, user, **k):
+        calls["n"] += 1
+        return {"lively": "v2 lively", "neutral": "v2 neutral", "roast": "v2 roast"}
+
+    # force=True rewrites the existing row (used to re-render past weeks anew).
+    assert weeklysummary.ensure_all(conn, chat_json=_v2, force=True) == [1]
+    assert calls["n"] == 1
+    assert weeklysummary.week_summaries(conn)[0]["lively"] == "v2 lively"
+    print("ok: ensure_all(force=True) rewrites existing recaps")
+
+
 def test_dashboard_modal_renders_switcher():
     conn = _seed()
     weeklysummary.generate(conn, 1, chat_json=_fake_llm)
@@ -132,9 +170,11 @@ def test_dashboard_modal_renders_switcher():
 def main():
     test_gather_pulls_scores_and_standings()
     test_gather_pulls_decisions()
+    test_gather_windows_chat_by_week()
     test_generate_stores_three_voices_idempotent()
     test_generate_skips_unscored_week()
     test_ensure_all_backfills_then_noops()
+    test_ensure_all_force_rewrites()
     test_dashboard_modal_renders_switcher()
     print("\nALL OFFLINE WEEKLY-RECAP TESTS PASSED")
     return 0
