@@ -15,6 +15,11 @@ What takes effect when:
   * ``late_fee`` immediately transfers a capped FAAB amount from the offending
     team to a named opponent (floored so the payer never goes negative) and
     records a ``team_effects`` row for the week, for a weekly tally.
+  * ``waiver_forfeit`` immediately transfers a capped FAAB amount from a team
+    that claimed during another team's declared priority window to that
+    wronged team (floored so the violator never goes negative), same shape as
+    ``late_fee``, recorded as its own ``team_effects`` type for a separate
+    tally.
   * ``trade_freeze`` / ``waiver_backseat`` / ``kicker_flex_lock`` /
     ``worst_lineup_lock`` / ``chat_mute`` RECORD their state in ``team_effects``
     with an ``active_through_week``; their enforcement hooks read it back via
@@ -198,6 +203,57 @@ def _a_late_fee(conn, team_id, p, bylaw_id):
     return f"{t['team_name']} pays a ${paid} late fee to {opp['team_name']}{capped}"
 
 
+# --- effect: waiver_forfeit (immediate, two-team transfer) ------------------
+# Bylaw #11: a GM who submits a waiver claim during another GM's declared
+# priority window forfeits a capped amount of their next FAAB claim to the
+# wronged team. The "priority window" itself isn't a tracked game object --
+# same as late_fee, the commissioner validates the infraction by hand before
+# enacting -- so this is an immediate transfer with no separate enforcement
+# hook.
+
+def _v_waiver_forfeit(conn, team_id, p):
+    if _team(conn, team_id) is None:
+        return False, "no such team"
+    opp_name = str(p.get("opponent", "")).strip()
+    if not opp_name:
+        return False, "opponent required"
+    opp_id = team_id_by_name(conn, opp_name)
+    if opp_id is None:
+        return False, f"no such opponent team {opp_name!r}"
+    if opp_id == team_id:
+        return False, "opponent must be a different team"
+    try:
+        amount = int(p["amount"])
+    except (KeyError, TypeError, ValueError):
+        return False, "amount must be an integer"
+    if not (1 <= amount <= config.GOV_WAIVER_FORFEIT_MAX):
+        return False, f"amount must be between 1 and {config.GOV_WAIVER_FORFEIT_MAX}"
+    return True, ""
+
+
+def _a_waiver_forfeit(conn, team_id, p, bylaw_id):
+    t = _team(conn, team_id)
+    opp_id = team_id_by_name(conn, str(p["opponent"]).strip())
+    opp = _team(conn, opp_id)
+    amount = int(p["amount"])
+    # Cap the forfeit at what the violator actually has -- same floor rule as
+    # late_fee/faab_adjust, a penalty can never push a team's FAAB negative.
+    paid = max(0, min(amount, t["faab_remaining"]))
+    conn.execute("UPDATE teams SET faab_remaining=faab_remaining-? WHERE team_id=?",
+                (paid, team_id))
+    conn.execute("UPDATE teams SET faab_remaining=faab_remaining+? WHERE team_id=?",
+                (paid, opp_id))
+    conn.execute(
+        "INSERT INTO team_effects(team_id, effect_type, params_json, "
+        "active_through_week, bylaw_id) VALUES(?,?,?,?,?)",
+        (team_id, "waiver_forfeit",
+         json.dumps({"opponent_team_id": opp_id, "amount": paid}),
+         _current_week(conn), bylaw_id))
+    capped = " (capped, violator had less)" if paid < amount else ""
+    return (f"{t['team_name']} forfeits ${paid} FAAB to {opp['team_name']} "
+            f"for jumping their priority window{capped}")
+
+
 # --- registry ---------------------------------------------------------------
 
 # effect_type -> (validate(conn, team_id, params)->(ok,err),
@@ -216,6 +272,7 @@ EFFECTS = {
                         _a_duration("chat_mute")),
     "loser_flag":      (_v_loser, _a_loser),
     "late_fee":        (_v_late_fee, _a_late_fee),
+    "waiver_forfeit":  (_v_waiver_forfeit, _a_waiver_forfeit),
 }
 
 # Human/model-facing metadata for each effect, used by the commissioner's
@@ -264,6 +321,15 @@ EFFECT_META = {
         "params": {
             "opponent": ("str", "opposing team name that receives the fee"),
             "amount": ("int", f"integer 1 to {config.GOV_LATE_FEE_MAX}"),
+        },
+    },
+    "waiver_forfeit": {
+        "desc": "forfeit a capped FAAB amount from one team to a named "
+                "opponent for claiming during that opponent's declared "
+                "waiver priority window",
+        "params": {
+            "opponent": ("str", "wronged team name that receives the forfeit"),
+            "amount": ("int", f"integer 1 to {config.GOV_WAIVER_FORFEIT_MAX}"),
         },
     },
 }

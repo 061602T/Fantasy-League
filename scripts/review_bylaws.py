@@ -35,6 +35,8 @@ Enact a passed bylaw as ONE bounded mechanical effect (option C):
         --team "Litigation Nation" --weeks 1
     python -m scripts.review_bylaws --effect 7 --type late_fee \
         --team "Litigation Nation" --opponent "Reasonable Doubt" --amount 10
+    python -m scripts.review_bylaws --effect 11 --type waiver_forfeit \
+        --team "Reasonable Doubt" --opponent "Nia's Team" --amount 15
 
 Reject a passed bylaw:
     python -m scripts.review_bylaws --reject 7 --reason "too far, even for us"
@@ -50,6 +52,9 @@ Effects and their params (all bounds-checked in ffl/effects.py):
     late_fee          --team, --opponent, --amount
                       (--team pays --opponent; 1 <= amount <= GOV_LATE_FEE_MAX;
                       transferred as FAAB, floored so the payer never goes negative)
+    waiver_forfeit    --team, --opponent, --amount
+                      (--team pays --opponent; 1 <= amount <= GOV_WAIVER_FORFEIT_MAX;
+                      transferred as FAAB, floored so the violator never goes negative)
 """
 import argparse
 import json
@@ -94,7 +99,8 @@ def _print_list(conn):
         print(f"       enact as lore:    review_bylaws --lore {b['bylaw_id']}")
         print(f"       effect by hand:   review_bylaws --effect {b['bylaw_id']} "
               f"--type <faab_adjust|trade_freeze|waiver_backseat|"
-              f"kicker_flex_lock|worst_lineup_lock|chat_mute|loser_flag|late_fee> "
+              f"kicker_flex_lock|worst_lineup_lock|chat_mute|loser_flag|"
+              f"late_fee|waiver_forfeit> "
               f"--team \"<name>\" ...")
         print(f"       reject:           review_bylaws --reject {b['bylaw_id']} "
               f"--reason \"...\"")
@@ -129,8 +135,10 @@ def main():
     ap.add_argument("--delta", type=int, help="faab_adjust delta (with --effect)")
     ap.add_argument("--weeks", type=int, help="freeze/backseat weeks (with --effect)")
     ap.add_argument("--label", help="loser_flag label (with --effect)")
-    ap.add_argument("--opponent", help="late_fee: opponent team NAME who is paid")
-    ap.add_argument("--amount", type=int, help="late_fee amount (with --effect)")
+    ap.add_argument("--opponent",
+                    help="late_fee/waiver_forfeit: opponent team NAME who is paid")
+    ap.add_argument("--amount", type=int,
+                    help="late_fee/waiver_forfeit amount (with --effect)")
     ap.add_argument("--auto", type=int, metavar="ID",
                     help="approve bylaw ID and let the model pick + apply the "
                          "single best bounded effect (still validated)")

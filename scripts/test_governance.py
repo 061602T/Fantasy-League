@@ -139,6 +139,50 @@ def test_late_fee_bounds():
     print("ok: late_fee bounds (amount 1..max, valid opponent, payer floored at 0)")
 
 
+def test_waiver_forfeit_bounds():
+    conn = _seed()
+    # Rejections: out-of-range amount, missing/unknown/self opponent.
+    ok, _ = effects.validate_effect(conn, "waiver_forfeit", 1,
+                                    {"opponent": "Team 2", "amount": 0})
+    assert not ok, "zero amount should be rejected"
+    ok, _ = effects.validate_effect(conn, "waiver_forfeit", 1,
+                                    {"opponent": "Team 2", "amount": 999})
+    assert not ok, "over-cap amount should be rejected"
+    ok, _ = effects.validate_effect(conn, "waiver_forfeit", 1,
+                                    {"opponent": "Team 1", "amount": 10})
+    assert not ok, "opponent same as violator should be rejected"
+    ok, _ = effects.validate_effect(conn, "waiver_forfeit", 1,
+                                    {"opponent": "Nobody FC", "amount": 10})
+    assert not ok, "unknown opponent should be rejected"
+    ok, _ = effects.validate_effect(conn, "waiver_forfeit", 999,
+                                    {"opponent": "Team 2", "amount": 10})
+    assert not ok, "unknown team should be rejected"
+
+    # Apply within range: capped $15 transfer from violator to wronged team.
+    ok, msg = effects.apply_effect(conn, "waiver_forfeit", 1,
+                                   {"opponent": "Team 2", "amount": 15})
+    assert ok, msg
+    rows = {r["team_id"]: r["faab_remaining"] for r in
+            conn.execute("SELECT team_id, faab_remaining FROM teams "
+                        "WHERE team_id IN (1,2)")}
+    assert rows == {1: 85, 2: 115}, rows
+    row = conn.execute("SELECT params_json FROM team_effects WHERE team_id=1 "
+                       "AND effect_type='waiver_forfeit'").fetchone()
+    assert json.loads(row["params_json"]) == {"opponent_team_id": 2, "amount": 15}
+
+    # Floored so a forfeit can never push the violator's FAAB negative.
+    conn.execute("UPDATE teams SET faab_remaining=4 WHERE team_id=3")
+    ok, msg = effects.apply_effect(conn, "waiver_forfeit", 3,
+                                   {"opponent": "Team 4", "amount": 15})
+    assert ok and "capped" in msg, msg
+    assert conn.execute("SELECT faab_remaining FROM teams WHERE team_id=3"
+                        ).fetchone()[0] == 0
+    assert conn.execute("SELECT faab_remaining FROM teams WHERE team_id=4"
+                        ).fetchone()[0] == 104
+    print("ok: waiver_forfeit bounds (amount 1..max, valid opponent, "
+          "violator floored at 0)")
+
+
 # --- propose / vote / tally -------------------------------------------------
 
 def _stub_propose(title="Tax the hoarders", pitch="They sit on FAAB like dragons."):
@@ -369,6 +413,23 @@ def test_classify_bylaw():
     out = governance.classify_bylaw(conn, b)
     assert out == {"fits": False, "name": "bench_bonus", "sketch": "add points"}, out
     print("ok: classify_bylaw routes fits/needs-new and normalizes the new name")
+
+
+def test_catalog_and_brief_cover_every_effect():
+    # The triage catalog and the coding-agent brief must list EVERY registered
+    # effect -- a stale list makes triage miss overlaps and dispatch redundant,
+    # name-colliding new-effect work (the real "second late_fee" bug).
+    conn = _seed()
+    cat = governance._effect_catalog()
+    assert all(et in cat for et in effects.EFFECT_META), cat
+    conn.execute("INSERT INTO bylaws(title,rationale,status,votes_open_at,"
+                 "votes_close_at) VALUES('T','P','passed_pending','a','b')")
+    conn.commit()
+    bid = conn.execute("SELECT bylaw_id FROM bylaws").fetchone()[0]
+    ok, brief = governance.draft_brief(conn, bid)
+    assert ok and all(et in brief for et in effects.EFFECT_META), brief
+    assert "do NOT add a duplicate" in brief
+    print("ok: classify catalog + draft brief list every registered effect")
 
 
 def test_dispatch_pending_new_effect():
@@ -721,6 +782,7 @@ def main():
     test_duration_and_loser_bounds()
     test_chat_mute_bounds()
     test_late_fee_bounds()
+    test_waiver_forfeit_bounds()
     test_propose_sanitizes_and_locks()
     test_vote_pass()
     test_vote_tie_fails()
@@ -735,6 +797,7 @@ def main():
     test_enact_auto_bad_suggestion_refused()
     test_draft_brief_sketch()
     test_classify_bylaw()            # real classify_bylaw -- must run before...
+    test_catalog_and_brief_cover_every_effect()
     test_dispatch_pending_new_effect()   # ...the dispatch tests, which stub it
     test_dispatch_pending_fits_existing()
     test_dispatch_pending_limit_and_resume()
