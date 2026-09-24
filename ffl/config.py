@@ -113,6 +113,10 @@ GOV_LOSER_LABEL_MAX = 80   # loser_flag label chars, sanitized
 # exactly one -- the shortest, least-severe duration the toolbox can express.
 GOV_CHAT_MUTE_MAX_WEEKS = 1
 GOV_LATE_FEE_MAX = 10      # $ per late_fee infraction; transferred payer -> opponent FAAB
+# worst_lineup_lock duration cap. Bylaw #10 caps the penalty at forfeiting one
+# week's lineup optimization per violation, so this stays capped at exactly
+# one -- the same shortest-grain reasoning as GOV_CHAT_MUTE_MAX_WEEKS above.
+GOV_WORST_LINEUP_MAX_WEEKS = 1
 # $ per waiver_forfeit infraction; transferred violator -> wronged team's FAAB
 # (Bylaw #11: a GM who claims during someone else's declared priority window
 # forfeits a capped amount of their next FAAB claim to the wronged team).

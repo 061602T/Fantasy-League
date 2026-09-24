@@ -96,8 +96,8 @@ def _projection_map() -> dict[str, float]:
     return {r.entity_id: r.proj_ppg for r in proj.itertuples(index=False)}
 
 
-def optimal_lineup(players: list[dict],
-                   force_kicker_flex: bool = False) -> dict[str, list[str]]:
+def optimal_lineup(players: list[dict], force_kicker_flex: bool = False,
+                   force_worst: bool = False) -> dict[str, list[str]]:
     """Pick starters from a roster by projection. Pure function (testable).
 
     `players`: list of {player_id, position, proj}. Returns slot -> [player_id].
@@ -106,8 +106,12 @@ def optimal_lineup(players: list[dict],
     `force_kicker_flex` (governance ``kicker_flex_lock``): the roster's best
     kicker is placed in FLEX instead of K, and K is left empty for the week --
     it does not fall back to filling K from anyone else.
+
+    `force_worst` (governance ``worst_lineup_lock``, Bylaw #10): fills every
+    slot from the LOWEST-projected eligible players instead of the highest --
+    the team's studs sit on the bench for the week, as a penalty.
     """
-    pool = sorted(players, key=lambda p: p["proj"], reverse=True)
+    pool = sorted(players, key=lambda p: p["proj"], reverse=not force_worst)
     used: set[str] = set()
     lineup: dict[str, list[str]] = {}
     kicker_id = None
@@ -148,7 +152,11 @@ def set_lineup(conn: sqlite3.Connection, team_id: int, week: int,
     # Governance kicker_flex_lock: a litigating team's kicker starts at FLEX.
     force_kicker_flex = team_id in effects.active_team_ids(
         conn, "kicker_flex_lock", week)
-    lineup = optimal_lineup(players, force_kicker_flex=force_kicker_flex)
+    # Governance worst_lineup_lock (Bylaw #10): a penalized team's studs sit.
+    force_worst = team_id in effects.active_team_ids(
+        conn, "worst_lineup_lock", week)
+    lineup = optimal_lineup(players, force_kicker_flex=force_kicker_flex,
+                            force_worst=force_worst)
 
     starters = {pid for pids in lineup.values() for pid in pids}
     conn.execute("DELETE FROM lineups WHERE team_id = ? AND week = ?",
