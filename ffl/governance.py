@@ -419,13 +419,16 @@ workflows, deployment, or the database.
 BYLAW #{id}: "{title}"
 Pitch: {pitch}
 {sketch_block}
-The league has a whitelist of bounded effects in ffl/effects.py (faab_adjust, \
-trade_freeze, waiver_backseat, loser_flag). Each has a validate fn (_v_*, returns \
-(ok, err)) and an apply fn (_a_*, mutates state or records a row in team_effects \
-and returns a one-line summary), both registered in the EFFECTS dict; bounds live \
-in ffl/config.py (GOV_*), and offline tests live in scripts/test_governance.py. \
-Add ONE new effect that carries out this bylaw's intent, following that pattern \
-exactly:
+The league ALREADY has these bounded effects in ffl/effects.py. If one of them \
+already carries out this bylaw's intent, STOP: do NOT add a duplicate -- comment \
+on the issue naming the effect that covers it, and open no PR.
+{existing}
+Each effect has a validate fn (_v_*, returns (ok, err)) and an apply fn (_a_*, \
+mutates state or records a row in team_effects and returns a one-line summary), \
+both registered in the EFFECTS dict and in EFFECT_META; bounds live in \
+ffl/config.py (GOV_*), and offline tests live in scripts/test_governance.py. If \
+none of the above fits, add ONE new effect with a NEW, unused name (never reuse \
+an existing effect's name), following that pattern exactly:
 
 1. ffl/config.py -- add any bound constants (GOV_*, env-overridable), matching \
 the style of the existing governance config block.
@@ -461,9 +464,11 @@ def draft_brief(conn, bylaw_id, *, sketch=None) -> tuple[bool, str]:
         return False, f"no bylaw #{bylaw_id}"
     sketch_block = (f"\nSuggested approach (automated triage, not binding): "
                     f"{sketch}\n" if sketch else "")
+    existing = "\n".join(f"- {et}: {effects.EFFECT_META[et]['desc']}."
+                         for et in sorted(effects.EFFECT_META))
     return True, _DRAFT_BRIEF.format(id=bylaw_id, title=b["title"],
                                      pitch=b["rationale"] or "",
-                                     sketch_block=sketch_block)
+                                     sketch_block=sketch_block, existing=existing)
 
 
 def enact_auto(conn, bylaw_id, *, dry_run=False, now=None) -> tuple[bool, str]:
@@ -511,15 +516,16 @@ def enact_auto_all(conn, *, dry_run=False, now=None) -> list[dict]:
 
 # --- coding-agent dispatch: draft a NEW effect for bylaws the toolbox can't fit -
 
-_EFFECT_CATALOG = (
-    "The league's WHOLE toolbox of bounded effects today:\n"
-    "- faab_adjust: change one team's FAAB waiver budget by a small capped integer.\n"
-    "- trade_freeze: bar one team from making trades for a few weeks.\n"
-    "- waiver_backseat: send one team to the back of every waiver tie for a few "
-    "weeks.\n"
-    "- loser_flag: attach a display-only shame label to one team.\n"
-    "- chat_mute: revoke one team's league group-chat posting privileges for a "
-    "while.\n")
+def _effect_catalog() -> str:
+    """The league's whole current toolbox, built from effects.EFFECT_META so a
+    newly added effect is listed automatically. classify_bylaw MUST see every
+    existing effect -- a stale hand-written list makes it miss overlaps and
+    dispatch redundant, name-colliding new-effect work (e.g. a second
+    'late_fee')."""
+    lines = ["The league's WHOLE toolbox of bounded effects today:"]
+    for et in sorted(effects.EFFECT_META):
+        lines.append(f"- {et}: {effects.EFFECT_META[et]['desc']}.")
+    return "\n".join(lines)
 
 
 def classify_bylaw(conn, bylaw) -> dict | None:
@@ -538,7 +544,7 @@ def classify_bylaw(conn, bylaw) -> dict | None:
               "Judge by intent, not keywords: only say an effect fits if applying "
               "it would actually accomplish what the bylaw asks. Answer only JSON.")
     user = (f'Passed bylaw: "{bylaw["title"]}"\nPitch: {bylaw.get("rationale") or ""}'
-            f"\n\n{_EFFECT_CATALOG}\n"
+            f"\n\n{_effect_catalog()}\n"
             "If ONE existing effect can carry out the intent, return "
             '{"fits": true, "effect_type": "<one of the names above>"}. '
             "If none can and it needs a new mechanic, return "

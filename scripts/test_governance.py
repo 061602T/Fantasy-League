@@ -371,6 +371,23 @@ def test_classify_bylaw():
     print("ok: classify_bylaw routes fits/needs-new and normalizes the new name")
 
 
+def test_catalog_and_brief_cover_every_effect():
+    # The triage catalog and the coding-agent brief must list EVERY registered
+    # effect -- a stale list makes triage miss overlaps and dispatch redundant,
+    # name-colliding new-effect work (the real "second late_fee" bug).
+    conn = _seed()
+    cat = governance._effect_catalog()
+    assert all(et in cat for et in effects.EFFECT_META), cat
+    conn.execute("INSERT INTO bylaws(title,rationale,status,votes_open_at,"
+                 "votes_close_at) VALUES('T','P','passed_pending','a','b')")
+    conn.commit()
+    bid = conn.execute("SELECT bylaw_id FROM bylaws").fetchone()[0]
+    ok, brief = governance.draft_brief(conn, bid)
+    assert ok and all(et in brief for et in effects.EFFECT_META), brief
+    assert "do NOT add a duplicate" in brief
+    print("ok: classify catalog + draft brief list every registered effect")
+
+
 def test_dispatch_pending_new_effect():
     conn = _seed()
     bid = _passed_bylaw(conn)
@@ -672,6 +689,7 @@ def main():
     test_enact_auto_bad_suggestion_refused()
     test_draft_brief_sketch()
     test_classify_bylaw()            # real classify_bylaw -- must run before...
+    test_catalog_and_brief_cover_every_effect()
     test_dispatch_pending_new_effect()   # ...the dispatch tests, which stub it
     test_dispatch_pending_fits_existing()
     test_dispatch_pending_limit_and_resume()
