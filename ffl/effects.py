@@ -20,6 +20,11 @@ What takes effect when:
     wronged team (floored so the violator never goes negative), same shape as
     ``late_fee``, recorded as its own ``team_effects`` type for a separate
     tally.
+  * ``late_lineup_tax`` immediately moves a capped percentage of a team's
+    already-scored week's points to that week's best-roster-efficiency team --
+    found automatically, never a human-picked recipient (``ffl/season.py``:
+    ``best_efficiency_team`` / ``team_week_efficiency``) -- by adjusting the
+    two teams' final ``matchups`` rows and rebuilding standings.
   * ``trade_freeze`` / ``waiver_backseat`` / ``kicker_flex_lock`` /
     ``worst_lineup_lock`` / ``chat_mute`` RECORD their state in ``team_effects``
     with an ``active_through_week``; their enforcement hooks read it back via
@@ -254,6 +259,68 @@ def _a_waiver_forfeit(conn, team_id, p, bylaw_id):
             f"for jumping their priority window{capped}")
 
 
+# --- effect: late_lineup_tax (immediate, points transfer) -------------------
+# Bylaw #12: a GM who submits a lineup change within 60 minutes of kickoff, or
+# starts a bye-week player, forfeits a capped percentage of that already-scored
+# week's points to the week's best roster-efficiency GM. Unlike late_fee/
+# waiver_forfeit, the recipient is NOT named by the commissioner -- it's found
+# automatically from the week's actual results (ffl/season.py:
+# best_efficiency_team), so this effect can't be pointed at an arbitrary team.
+# "One transfer per team per week" is enforced by refusing a second enactment
+# of this type for the same (team, week).
+
+def _v_late_lineup_tax(conn, team_id, p):
+    if _team(conn, team_id) is None:
+        return False, "no such team"
+    try:
+        week = int(p["week"])
+    except (KeyError, TypeError, ValueError):
+        return False, "week must be an integer"
+    if not (1 <= week <= config.REGULAR_SEASON_WEEKS):
+        return False, f"week must be between 1 and {config.REGULAR_SEASON_WEEKS}"
+    try:
+        pct = int(p["pct"])
+    except (KeyError, TypeError, ValueError):
+        return False, "pct must be an integer"
+    if not (1 <= pct <= config.GOV_LATE_LINEUP_TAX_MAX_PCT):
+        return False, f"pct must be between 1 and {config.GOV_LATE_LINEUP_TAX_MAX_PCT}"
+    if conn.execute(
+            "SELECT 1 FROM team_effects WHERE team_id=? AND effect_type="
+            "'late_lineup_tax' AND active_through_week=?", (team_id, week)).fetchone():
+        return False, f"team already taxed for week {week} (one per team per week)"
+    m = conn.execute(
+        "SELECT home_team_id, home_points, away_points FROM matchups WHERE "
+        "week=? AND status='final' AND (home_team_id=? OR away_team_id=?)",
+        (week, team_id, team_id)).fetchone()
+    if m is None:
+        return False, f"no finalized matchup for that team in week {week}"
+    payer_points = m["home_points"] if m["home_team_id"] == team_id else m["away_points"]
+    if not payer_points or payer_points <= 0:
+        return False, f"team scored 0 or fewer points in week {week}; nothing to tax"
+    from . import season  # local import: season.py imports this module
+    if season.best_efficiency_team(conn, week, exclude_team_id=team_id) is None:
+        return False, f"no eligible recipient team found for week {week}"
+    return True, ""
+
+
+def _a_late_lineup_tax(conn, team_id, p, bylaw_id):
+    from . import season  # local import: season.py imports this module
+    t = _team(conn, team_id)
+    week, pct = int(p["week"]), int(p["pct"])
+    result = season.apply_points_tax(conn, team_id, week, pct)
+    amount, recipient_id = result["amount"], result["recipient_team_id"]
+    recipient = _team(conn, recipient_id)
+    conn.execute(
+        "INSERT INTO team_effects(team_id, effect_type, params_json, "
+        "active_through_week, bylaw_id) VALUES(?,?,?,?,?)",
+        (team_id, "late_lineup_tax",
+         json.dumps({"week": week, "pct": pct, "amount": amount,
+                    "recipient_team_id": recipient_id}),
+         week, bylaw_id))
+    return (f"{t['team_name']} forfeits {amount} pts ({pct}% of week {week}) to "
+            f"{recipient['team_name']} (best roster efficiency)")
+
+
 # --- registry ---------------------------------------------------------------
 
 # effect_type -> (validate(conn, team_id, params)->(ok,err),
@@ -273,6 +340,7 @@ EFFECTS = {
     "loser_flag":      (_v_loser, _a_loser),
     "late_fee":        (_v_late_fee, _a_late_fee),
     "waiver_forfeit":  (_v_waiver_forfeit, _a_waiver_forfeit),
+    "late_lineup_tax": (_v_late_lineup_tax, _a_late_lineup_tax),
 }
 
 # Human/model-facing metadata for each effect, used by the commissioner's
@@ -330,6 +398,17 @@ EFFECT_META = {
         "params": {
             "opponent": ("str", "wronged team name that receives the forfeit"),
             "amount": ("int", f"integer 1 to {config.GOV_WAIVER_FORFEIT_MAX}"),
+        },
+    },
+    "late_lineup_tax": {
+        "desc": "forfeit a percentage of one team's already-scored week points "
+                "to that week's best roster-efficiency team, found "
+                "automatically (Bylaw #12: a late lineup change or a "
+                "benched-bye-week player)",
+        "params": {
+            "week": ("int", f"integer 1 to {config.REGULAR_SEASON_WEEKS}, "
+                     "must already be scored"),
+            "pct": ("int", f"integer 1 to {config.GOV_LATE_LINEUP_TAX_MAX_PCT}"),
         },
     },
 }

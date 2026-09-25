@@ -235,6 +235,103 @@ def score_week(conn: sqlite3.Connection, week: int, season: int = None,
     return results
 
 
+def team_week_efficiency(conn, team_id: int, week: int,
+                         points: dict[str, float] = None) -> float | None:
+    """Roster efficiency for a scored week: STARTERS' actual points / the best
+    possible lineup's actual points from the same roster (hindsight-optimal via
+    `optimal_lineup`, fed real points instead of projections). Used by
+    governance's ``late_lineup_tax`` (Bylaw #12) to find the week's most
+    efficient GM automatically. None if there's no rankable best-possible score
+    (e.g. an empty roster that week) -- callers must skip such teams.
+    """
+    if points is None:
+        points = _weekly_points(conn, config.SEASON, week)
+    roster = conn.execute(
+        """SELECT p.player_id, p.position
+             FROM rosters r JOIN players p ON p.player_id = r.player_id
+            WHERE r.team_id = ? AND r.dropped_week IS NULL""",
+        (team_id,)).fetchall()
+    if not roster:
+        return None
+    players = [{"player_id": r["player_id"], "position": r["position"],
+                "proj": points.get(r["player_id"], 0.0)} for r in roster]
+    best = optimal_lineup(players)
+    best_points = round(sum(points.get(pid, 0.0)
+                            for pids in best.values() for pid in pids), 2)
+    if best_points <= 0:
+        return None
+    return round(team_week_score(conn, team_id, week, points) / best_points, 4)
+
+
+def best_efficiency_team(conn, week: int, exclude_team_id: int = None) -> int | None:
+    """team_id with the highest `team_week_efficiency` for a scored week,
+    excluding `exclude_team_id` (the offending team, for governance's
+    ``late_lineup_tax``). None if no other team has a rankable week."""
+    points = _weekly_points(conn, config.SEASON, week)
+    best_tid, best_eff = None, None
+    for r in conn.execute("SELECT team_id FROM teams"):
+        tid = r["team_id"]
+        if tid == exclude_team_id:
+            continue
+        eff = team_week_efficiency(conn, tid, week, points)
+        if eff is not None and (best_eff is None or eff > best_eff):
+            best_tid, best_eff = tid, eff
+    return best_tid
+
+
+def _adjust_matchup_points(conn, matchup_id: int, team_id: int, delta: float) -> None:
+    """Add `delta` to `team_id`'s already-final points in one matchup row and
+    re-derive winner_team_id, since the row's points just changed."""
+    row = conn.execute(
+        "SELECT home_team_id, away_team_id, home_points, away_points "
+        "FROM matchups WHERE matchup_id=?", (matchup_id,)).fetchone()
+    is_home = row["home_team_id"] == team_id
+    hp = (row["home_points"] or 0.0) + (delta if is_home else 0.0)
+    ap = (row["away_points"] or 0.0) + (delta if not is_home else 0.0)
+    winner = (row["home_team_id"] if hp > ap
+             else row["away_team_id"] if ap > hp else None)
+    conn.execute(
+        "UPDATE matchups SET home_points=?, away_points=?, winner_team_id=? "
+        "WHERE matchup_id=?", (round(hp, 2), round(ap, 2), winner, matchup_id))
+
+
+def apply_points_tax(conn, team_id: int, week: int, pct: int) -> dict:
+    """Move `pct`% of `team_id`'s already-scored week `week` points to that
+    week's best-roster-efficiency team (governance ``late_lineup_tax``, Bylaw
+    #12). Re-derives the affected matchups' winner_team_id and rebuilds
+    standings, since points_for/against are fully aggregated from `matchups`,
+    not stored incrementally -- same idempotency guarantee as `score_week`.
+    Returns {"amount", "recipient_team_id"}; amount is 0 and recipient_team_id
+    is None if there's nothing to tax or no eligible recipient. Callers
+    (``ffl/effects.py``) are expected to have already validated both via
+    ``best_efficiency_team`` and a positive scored total before calling this.
+    """
+    m = conn.execute(
+        "SELECT matchup_id, home_team_id, home_points, away_points FROM matchups "
+        "WHERE week=? AND status='final' AND (home_team_id=? OR away_team_id=?)",
+        (week, team_id, team_id)).fetchone()
+    if m is None:
+        return {"amount": 0, "recipient_team_id": None}
+    payer_points = m["home_points"] if m["home_team_id"] == team_id else m["away_points"]
+    amount = round((payer_points or 0.0) * pct / 100.0, 2)
+    if amount <= 0:
+        return {"amount": 0, "recipient_team_id": None}
+
+    recipient_id = best_efficiency_team(conn, week, exclude_team_id=team_id)
+    if recipient_id is None:
+        return {"amount": 0, "recipient_team_id": None}
+    rm = conn.execute(
+        "SELECT matchup_id FROM matchups WHERE week=? AND status='final' AND "
+        "(home_team_id=? OR away_team_id=?)",
+        (week, recipient_id, recipient_id)).fetchone()
+
+    _adjust_matchup_points(conn, m["matchup_id"], team_id, -amount)
+    _adjust_matchup_points(conn, rm["matchup_id"], recipient_id, amount)
+    conn.commit()
+    recompute_standings(conn)
+    return {"amount": amount, "recipient_team_id": recipient_id}
+
+
 def recompute_standings(conn: sqlite3.Connection) -> None:
     """Rebuild every team's W/L/T and points for/against from final matchups.
 

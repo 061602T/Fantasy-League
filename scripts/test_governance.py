@@ -777,6 +777,161 @@ def test_chat_mute_blocks_posting():
     print("ok: chat_mute silences a team in event chat and the ambient loop")
 
 
+# --- late_lineup_tax (Bylaw #12: Litigation Nation Late-Lineup Tax) ---------
+
+# Same shape as the worst_lineup_lock roster (real bench slack at every
+# flex-eligible position), so a hindsight-optimal lineup can genuinely differ
+# from the proj-chosen one.
+_TAX_ROSTER = ["QB", "RB", "RB", "RB", "RB", "WR", "WR", "WR", "WR", "TE", "TE",
+              "K", "DST"]
+
+
+def _seed_tax_roster(conn, team_id, prefix, proj_map):
+    """Seed a full _TAX_ROSTER for `team_id` and return its player_id -> proj
+    dict (also merged into the shared `proj_map` used for lineup selection)."""
+    own = {}
+    for i, pos in enumerate(_TAX_ROSTER):
+        pid = f"{prefix}{i}_{pos}"
+        conn.execute("INSERT INTO players(player_id, name, position) VALUES(?,?,?)",
+                     (pid, pid, pos))
+        conn.execute(
+            "INSERT INTO rosters(team_id, player_id, acquired_via, acquired_week) "
+            "VALUES(?,?, 'draft', 0)", (team_id, pid))
+        proj_map[pid] = own[pid] = 50 - i
+    conn.commit()
+    return own
+
+
+def _insert_actual(conn, player_id, points):
+    conn.execute(
+        "INSERT INTO player_weekly_scores(player_id, season, week, fantasy_points) "
+        "VALUES(?,?,1,?)", (player_id, config.SEASON, points))
+
+
+def test_late_lineup_tax_efficiency_helper():
+    conn = _seed()
+    proj_map = {}
+    a = _seed_tax_roster(conn, 1, "a", proj_map)   # inefficient team
+    b = _seed_tax_roster(conn, 2, "b", proj_map)   # perfectly efficient team
+    season.set_lineup(conn, 1, 1, proj_map)
+    season.set_lineup(conn, 2, 1, proj_map)
+
+    # Team 1: actual points match proj for everyone EXCEPT the started FLEX
+    # RB (proj 47, "a3_RB") scores 0 -- a bye-week dud -- while the benched
+    # 4th RB (proj 46, "a4_RB") explodes for 30: hindsight says it should have
+    # started, so the roster was NOT played optimally.
+    for pid, proj in a.items():
+        _insert_actual(conn, pid, proj)
+    conn.execute("UPDATE player_weekly_scores SET fantasy_points=0 "
+                "WHERE player_id='a3_RB'")
+    conn.execute("UPDATE player_weekly_scores SET fantasy_points=30 "
+                "WHERE player_id='a4_RB'")
+    # Team 2: actual points equal proj everywhere -- its proj-chosen lineup was
+    # already the best possible one, i.e. perfect roster efficiency.
+    for pid, proj in b.items():
+        _insert_actual(conn, pid, proj)
+    conn.commit()
+
+    eff1 = season.team_week_efficiency(conn, 1, 1)
+    eff2 = season.team_week_efficiency(conn, 2, 1)
+    assert eff1 == round(354 / 397, 4), eff1   # started 354, best possible 397
+    assert eff2 == 1.0, eff2
+    assert season.team_week_efficiency(conn, 5, 1) is None, \
+        "a team with no roster has no rankable efficiency"
+
+    assert season.best_efficiency_team(conn, 1, exclude_team_id=1) == 2
+    assert season.best_efficiency_team(conn, 1, exclude_team_id=2) == 1, \
+        "excluding the only efficient team still returns the remaining candidate"
+    print("ok: team_week_efficiency/best_efficiency_team (started vs "
+          "hindsight-optimal, unranked teams skipped)")
+
+
+def test_late_lineup_tax_bounds_and_transfer():
+    conn = _seed()
+    proj_map = {}
+    a = _seed_tax_roster(conn, 1, "a", proj_map)   # violator
+    b = _seed_tax_roster(conn, 2, "b", proj_map)   # best roster efficiency
+    for pid, proj in a.items():
+        _insert_actual(conn, pid, proj)
+    conn.execute("UPDATE player_weekly_scores SET fantasy_points=0 "
+                "WHERE player_id='a3_RB'")
+    conn.execute("UPDATE player_weekly_scores SET fantasy_points=30 "
+                "WHERE player_id='a4_RB'")
+    for pid, proj in b.items():
+        _insert_actual(conn, pid, proj)
+    # Team 8 (week 1's opponent for team 1) gets a single 340-pt player -- just
+    # between team 1's pre-tax (354) and post-tax (318.6) scores, so the 10%
+    # transfer flips that matchup's winner.
+    conn.execute("INSERT INTO players(player_id, name, position) "
+                "VALUES('h_DST', 'h_DST', 'DST')")
+    conn.execute("INSERT INTO rosters(team_id, player_id, acquired_via, "
+                "acquired_week) VALUES(8, 'h_DST', 'draft', 0)")
+    proj_map["h_DST"] = 1
+    _insert_actual(conn, "h_DST", 340)
+    conn.commit()
+
+    season.build_schedule(conn)
+    # Rejections BEFORE the week is scored: no finalized matchup yet.
+    ok, _ = effects.validate_effect(conn, "late_lineup_tax", 1, {"week": 1, "pct": 10})
+    assert not ok, "unscored week should be rejected"
+
+    season.score_week(conn, 1, proj_map=proj_map)   # week 1: round-robin pairs (1,8) and (7,2)
+    m1 = conn.execute("SELECT home_team_id, away_team_id, home_points, "
+                      "away_points, winner_team_id FROM matchups "
+                      "WHERE week=1 AND (home_team_id=1 OR away_team_id=1)").fetchone()
+    assert round(m1["home_points" if m1["home_team_id"] == 1 else "away_points"], 2) == 354
+    assert m1["winner_team_id"] == 1, "354 beats team 8's 340 before any tax"
+
+    # Bounds rejections.
+    assert not effects.validate_effect(conn, "late_lineup_tax", 1, {"week": 0, "pct": 10})[0]
+    assert not effects.validate_effect(
+        conn, "late_lineup_tax", 1,
+        {"week": config.REGULAR_SEASON_WEEKS + 1, "pct": 10})[0]
+    assert not effects.validate_effect(conn, "late_lineup_tax", 1, {"week": 1, "pct": 0})[0]
+    assert not effects.validate_effect(
+        conn, "late_lineup_tax", 1,
+        {"week": 1, "pct": config.GOV_LATE_LINEUP_TAX_MAX_PCT + 1})[0]
+    assert not effects.validate_effect(conn, "late_lineup_tax", 999,
+                                       {"week": 1, "pct": 10})[0], "unknown team"
+    assert not effects.validate_effect(conn, "late_lineup_tax", 1,
+                                       {"week": 2, "pct": 10})[0], \
+        "week 2 isn't scored yet"
+
+    # Apply within range: 10% of team 1's 354 (=35.4) moves to team 2 (the
+    # week's best roster-efficiency team, chosen automatically).
+    ok, msg = effects.apply_effect(conn, "late_lineup_tax", 1, {"week": 1, "pct": 10})
+    assert ok, msg
+    row = conn.execute("SELECT params_json FROM team_effects WHERE team_id=1 "
+                       "AND effect_type='late_lineup_tax'").fetchone()
+    params = json.loads(row["params_json"])
+    assert params == {"week": 1, "pct": 10, "amount": 35.4, "recipient_team_id": 2}, params
+
+    m1 = conn.execute("SELECT home_team_id, home_points, away_points, "
+                      "winner_team_id FROM matchups WHERE week=1 AND "
+                      "(home_team_id=1 OR away_team_id=1)").fetchone()
+    team1_pts = m1["home_points"] if m1["home_team_id"] == 1 else m1["away_points"]
+    assert round(team1_pts, 2) == 318.6, team1_pts
+    assert m1["winner_team_id"] == 8, "team 8's untouched 340 now beats 318.6"
+
+    m2 = conn.execute("SELECT home_team_id, home_points, away_points FROM "
+                      "matchups WHERE week=1 AND (home_team_id=2 OR "
+                      "away_team_id=2)").fetchone()
+    team2_pts = m2["home_points"] if m2["home_team_id"] == 2 else m2["away_points"]
+    assert round(team2_pts, 2) == 436.4, team2_pts
+
+    teams = {r["team_id"]: r["points_for"] for r in
+             conn.execute("SELECT team_id, points_for FROM teams "
+                          "WHERE team_id IN (1,2,8)")}
+    assert teams == {1: 318.6, 2: 436.4, 8: 340}, \
+        "recompute_standings must reflect the transferred points"
+
+    # Capped at one transfer per team per week.
+    ok, err = effects.validate_effect(conn, "late_lineup_tax", 1, {"week": 1, "pct": 10})
+    assert not ok and "one per team per week" in err, err
+    print("ok: late_lineup_tax bounds + points transfer (winner/standings "
+          "recomputed, one enactment per team per week)")
+
+
 def main():
     test_faab_bounds()
     test_duration_and_loser_bounds()
@@ -816,6 +971,8 @@ def main():
     test_worst_lineup_lock_bounds()
     test_worst_lineup_lock_enforcement_hook()
     test_chat_mute_blocks_posting()
+    test_late_lineup_tax_efficiency_helper()
+    test_late_lineup_tax_bounds_and_transfer()
     print("\nALL OFFLINE GOVERNANCE TESTS PASSED")
     return 0
 

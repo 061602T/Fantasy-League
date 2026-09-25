@@ -37,6 +37,8 @@ Enact a passed bylaw as ONE bounded mechanical effect (option C):
         --team "Litigation Nation" --opponent "Reasonable Doubt" --amount 10
     python -m scripts.review_bylaws --effect 11 --type waiver_forfeit \
         --team "Reasonable Doubt" --opponent "Nia's Team" --amount 15
+    python -m scripts.review_bylaws --effect 12 --type late_lineup_tax \
+        --team "Litigation Nation" --week 3 --pct 10
 
 Reject a passed bylaw:
     python -m scripts.review_bylaws --reject 7 --reason "too far, even for us"
@@ -55,6 +57,11 @@ Effects and their params (all bounds-checked in ffl/effects.py):
     waiver_forfeit    --team, --opponent, --amount
                       (--team pays --opponent; 1 <= amount <= GOV_WAIVER_FORFEIT_MAX;
                       transferred as FAAB, floored so the violator never goes negative)
+    late_lineup_tax   --team, --week, --pct
+                      (--team forfeits pct% of its already-scored --week points to
+                      that week's best roster-efficiency team, found automatically;
+                      1 <= pct <= GOV_LATE_LINEUP_TAX_MAX_PCT; one enactment per
+                      team per week)
 """
 import argparse
 import json
@@ -100,7 +107,7 @@ def _print_list(conn):
         print(f"       effect by hand:   review_bylaws --effect {b['bylaw_id']} "
               f"--type <faab_adjust|trade_freeze|waiver_backseat|"
               f"kicker_flex_lock|worst_lineup_lock|chat_mute|loser_flag|"
-              f"late_fee|waiver_forfeit> "
+              f"late_fee|waiver_forfeit|late_lineup_tax> "
               f"--team \"<name>\" ...")
         print(f"       reject:           review_bylaws --reject {b['bylaw_id']} "
               f"--reason \"...\"")
@@ -139,6 +146,11 @@ def main():
                     help="late_fee/waiver_forfeit: opponent team NAME who is paid")
     ap.add_argument("--amount", type=int,
                     help="late_fee/waiver_forfeit amount (with --effect)")
+    ap.add_argument("--week", type=int,
+                    help="late_lineup_tax: the already-scored week to tax (with --effect)")
+    ap.add_argument("--pct", type=int,
+                    help="late_lineup_tax: percent of that week's points to "
+                         "forfeit (with --effect)")
     ap.add_argument("--auto", type=int, metavar="ID",
                     help="approve bylaw ID and let the model pick + apply the "
                          "single best bounded effect (still validated)")
@@ -222,6 +234,10 @@ def main():
             params["opponent"] = args.opponent
         if args.amount is not None:
             params["amount"] = args.amount
+        if args.week is not None:
+            params["week"] = args.week
+        if args.pct is not None:
+            params["pct"] = args.pct
         ok, msg = governance.enact_effect(conn, args.effect, args.type, tid, params)
         print(msg if ok else f"error: {msg}", file=sys.stderr if not ok else sys.stdout)
         return 0 if ok else 1

@@ -121,6 +121,13 @@ GOV_WORST_LINEUP_MAX_WEEKS = 1
 # (Bylaw #11: a GM who claims during someone else's declared priority window
 # forfeits a capped amount of their next FAAB claim to the wronged team).
 GOV_WAIVER_FORFEIT_MAX = 15
+# % of a team's already-scored week points forfeited per late_lineup_tax
+# infraction (Bylaw #12: a late lineup change or a benched-bye-week player
+# forfeits a share of that week's points to the week's best roster-efficiency
+# team, found automatically). The bylaw pitches 10%; capped a bit above that so
+# the commissioner isn't locked to exactly 10 for a worse repeat offense --
+# same reasoning as GOV_LATE_FEE_MAX.
+GOV_LATE_LINEUP_TAX_MAX_PCT = 20
 
 # --- Draft-day chatter -----------------------------------------------------
 # Per-pick probability that a notable pick draws live reactions from a few
