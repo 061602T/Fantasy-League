@@ -121,6 +121,11 @@ GOV_WORST_LINEUP_MAX_WEEKS = 1
 # (Bylaw #11: a GM who claims during someone else's declared priority window
 # forfeits a capped amount of their next FAAB claim to the wronged team).
 GOV_WAIVER_FORFEIT_MAX = 15
+# grievance_dance_mandate duration cap (Bylaw #14: a GM who over-files formal
+# grievances must submit future ones as interpretive-dance videos instead of
+# text for a bounded number of weeks; non-compliance is a separate, manual
+# waiver_backseat/faab_adjust penalty, not part of this flag).
+GOV_DANCE_MANDATE_MAX_WEEKS = 4
 
 # --- Draft-day chatter -----------------------------------------------------
 # Per-pick probability that a notable pick draws live reactions from a few

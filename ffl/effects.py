@@ -29,6 +29,12 @@ What takes effect when:
     into FLEX or its lineup to the worst-projected eligible players when its
     weekly lineup is set (``ffl/season.py:set_lineup``), and silencing a muted
     team in group chat (``ffl/chat.py``).
+  * ``grievance_dance_mandate`` also records a bounded ``active_through_week``
+    row via ``active_team_ids``, same shape as the effects above, but like
+    ``loser_flag`` it has no mechanical enforcement hook -- "formal
+    grievances" aren't a tracked game object, so the commissioner judges
+    compliance by hand each week (Bylaw #14: non-compliance is a separate,
+    manually-enacted ``waiver_backseat``/``faab_adjust`` penalty).
 
 The model never reaches this code: a GM's bylaw is free text, and the
 commissioner -- a human -- chooses which effect (if any) to apply. This module
@@ -273,6 +279,8 @@ EFFECTS = {
     "loser_flag":      (_v_loser, _a_loser),
     "late_fee":        (_v_late_fee, _a_late_fee),
     "waiver_forfeit":  (_v_waiver_forfeit, _a_waiver_forfeit),
+    "grievance_dance_mandate": (_v_weeks(config.GOV_DANCE_MANDATE_MAX_WEEKS),
+                        _a_duration("grievance_dance_mandate")),
 }
 
 # Human/model-facing metadata for each effect, used by the commissioner's
@@ -331,6 +339,14 @@ EFFECT_META = {
             "opponent": ("str", "wronged team name that receives the forfeit"),
             "amount": ("int", f"integer 1 to {config.GOV_WAIVER_FORFEIT_MAX}"),
         },
+    },
+    "grievance_dance_mandate": {
+        "desc": "flag one team as required to submit future formal grievances "
+                "as video-only interpretive dance instead of text for a while "
+                "(Bylaw #14: a repeat-griever penalty; non-compliance is "
+                "enacted separately, e.g. as waiver_backseat or faab_adjust)",
+        "params": {"weeks": ("int",
+                   f"integer 1 to {config.GOV_DANCE_MANDATE_MAX_WEEKS}")},
     },
 }
 

@@ -96,6 +96,24 @@ def test_chat_mute_bounds():
     print("ok: chat_mute bounds (weeks capped at 1, unknown team rejected)")
 
 
+def test_grievance_dance_mandate_bounds():
+    conn = _seed()
+    assert not effects.validate_effect(conn, "grievance_dance_mandate", 1,
+                                       {"weeks": 0})[0]
+    assert not effects.validate_effect(conn, "grievance_dance_mandate", 1,
+                                       {"weeks": 5})[0]
+    assert not effects.validate_effect(conn, "grievance_dance_mandate", 999,
+                                       {"weeks": 2})[0]
+    ok, _ = effects.apply_effect(conn, "grievance_dance_mandate", 1,
+                                 {"weeks": 4}, bylaw_id=None)
+    assert ok
+    row = conn.execute("SELECT active_through_week FROM team_effects WHERE "
+                       "team_id=1 AND effect_type='grievance_dance_mandate'"
+                       ).fetchone()
+    assert row["active_through_week"] == 5   # current_week 1 + 4 weeks
+    print("ok: grievance_dance_mandate bounds (weeks 1..4, unknown team rejected)")
+
+
 def test_late_fee_bounds():
     conn = _seed()
     # Rejections: out-of-range amount, missing/unknown/self opponent.
@@ -781,6 +799,7 @@ def main():
     test_faab_bounds()
     test_duration_and_loser_bounds()
     test_chat_mute_bounds()
+    test_grievance_dance_mandate_bounds()
     test_late_fee_bounds()
     test_waiver_forfeit_bounds()
     test_propose_sanitizes_and_locks()
