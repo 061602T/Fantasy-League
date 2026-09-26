@@ -126,6 +126,12 @@ GOV_WAIVER_FORFEIT_MAX = 15
 # text for a bounded number of weeks; non-compliance is a separate, manual
 # waiver_backseat/faab_adjust penalty, not part of this flag).
 GOV_DANCE_MANDATE_MAX_WEEKS = 4
+# waiver_disclosure_mandate note chars, sanitized (Bylaw #16: flags a team as
+# required to publicly disclose in the group chat before submitting any waiver
+# claim; the note records why. Unlimited duration -- like loser_flag, it has no
+# weeks cap -- so non-disclosure is judged by hand and enacted separately, e.g.
+# as waiver_forfeit or faab_adjust, same pattern as grievance_dance_mandate).
+GOV_DISCLOSURE_NOTE_MAX = 160
 
 # --- Draft-day chatter -----------------------------------------------------
 # Per-pick probability that a notable pick draws live reactions from a few

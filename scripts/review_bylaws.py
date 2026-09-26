@@ -39,6 +39,8 @@ Enact a passed bylaw as ONE bounded mechanical effect (option C):
         --team "Reasonable Doubt" --opponent "Nia's Team" --amount 15
     python -m scripts.review_bylaws --effect 14 --type grievance_dance_mandate \
         --team "Litigation Nation" --weeks 4
+    python -m scripts.review_bylaws --effect 16 --type waiver_disclosure_mandate \
+        --team "Litigation Nation" --note "must post proof before every claim"
 
 Reject a passed bylaw:
     python -m scripts.review_bylaws --reject 7 --reason "too far, even for us"
@@ -61,6 +63,11 @@ Effects and their params (all bounds-checked in ffl/effects.py):
                       (1..GOV_DANCE_MANDATE_MAX_WEEKS; Bylaw #14 -- flags a team to
                       submit future grievances as video-only interpretive dance;
                       no enforcement hook, commissioner judges compliance by hand)
+    waiver_disclosure_mandate  --team, --note
+                      (note sanitized, <= GOV_DISCLOSURE_NOTE_MAX; Bylaw #16 --
+                      flags a team to publicly disclose in the group chat before
+                      any waiver claim, unlimited duration; no enforcement hook,
+                      commissioner judges compliance by hand)
 """
 import argparse
 import json
@@ -106,7 +113,8 @@ def _print_list(conn):
         print(f"       effect by hand:   review_bylaws --effect {b['bylaw_id']} "
               f"--type <faab_adjust|trade_freeze|waiver_backseat|"
               f"kicker_flex_lock|worst_lineup_lock|chat_mute|loser_flag|"
-              f"late_fee|waiver_forfeit|grievance_dance_mandate> "
+              f"late_fee|waiver_forfeit|grievance_dance_mandate|"
+              f"waiver_disclosure_mandate> "
               f"--team \"<name>\" ...")
         print(f"       reject:           review_bylaws --reject {b['bylaw_id']} "
               f"--reason \"...\"")
@@ -145,6 +153,7 @@ def main():
                     help="late_fee/waiver_forfeit: opponent team NAME who is paid")
     ap.add_argument("--amount", type=int,
                     help="late_fee/waiver_forfeit amount (with --effect)")
+    ap.add_argument("--note", help="waiver_disclosure_mandate note (with --effect)")
     ap.add_argument("--auto", type=int, metavar="ID",
                     help="approve bylaw ID and let the model pick + apply the "
                          "single best bounded effect (still validated)")
@@ -228,6 +237,8 @@ def main():
             params["opponent"] = args.opponent
         if args.amount is not None:
             params["amount"] = args.amount
+        if args.note is not None:
+            params["note"] = args.note
         ok, msg = governance.enact_effect(conn, args.effect, args.type, tid, params)
         print(msg if ok else f"error: {msg}", file=sys.stderr if not ok else sys.stdout)
         return 0 if ok else 1
