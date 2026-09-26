@@ -37,6 +37,8 @@ Enact a passed bylaw as ONE bounded mechanical effect (option C):
         --team "Litigation Nation" --opponent "Reasonable Doubt" --amount 10
     python -m scripts.review_bylaws --effect 11 --type waiver_forfeit \
         --team "Reasonable Doubt" --opponent "Nia's Team" --amount 15
+    python -m scripts.review_bylaws --effect 14 --type grievance_dance_mandate \
+        --team "Litigation Nation" --weeks 4
 
 Reject a passed bylaw:
     python -m scripts.review_bylaws --reject 7 --reason "too far, even for us"
@@ -55,6 +57,10 @@ Effects and their params (all bounds-checked in ffl/effects.py):
     waiver_forfeit    --team, --opponent, --amount
                       (--team pays --opponent; 1 <= amount <= GOV_WAIVER_FORFEIT_MAX;
                       transferred as FAAB, floored so the violator never goes negative)
+    grievance_dance_mandate  --team, --weeks
+                      (1..GOV_DANCE_MANDATE_MAX_WEEKS; Bylaw #14 -- flags a team to
+                      submit future grievances as video-only interpretive dance;
+                      no enforcement hook, commissioner judges compliance by hand)
 """
 import argparse
 import json
@@ -100,7 +106,7 @@ def _print_list(conn):
         print(f"       effect by hand:   review_bylaws --effect {b['bylaw_id']} "
               f"--type <faab_adjust|trade_freeze|waiver_backseat|"
               f"kicker_flex_lock|worst_lineup_lock|chat_mute|loser_flag|"
-              f"late_fee|waiver_forfeit> "
+              f"late_fee|waiver_forfeit|grievance_dance_mandate> "
               f"--team \"<name>\" ...")
         print(f"       reject:           review_bylaws --reject {b['bylaw_id']} "
               f"--reason \"...\"")
