@@ -114,6 +114,27 @@ def test_grievance_dance_mandate_bounds():
     print("ok: grievance_dance_mandate bounds (weeks 1..4, unknown team rejected)")
 
 
+def test_waiver_disclosure_mandate_bounds():
+    conn = _seed()
+    assert not effects.validate_effect(conn, "waiver_disclosure_mandate", 1,
+                                       {"note": "   "})[0]
+    assert not effects.validate_effect(conn, "waiver_disclosure_mandate", 999,
+                                       {"note": "x"})[0]
+    ok, _ = effects.apply_effect(conn, "waiver_disclosure_mandate", 1,
+                                 {"note": "x" * 200})   # over-long, gets capped
+    assert ok
+    row = conn.execute("SELECT params_json, active_through_week FROM team_effects "
+                       "WHERE team_id=1 AND effect_type='waiver_disclosure_mandate'"
+                       ).fetchone()
+    note = json.loads(row["params_json"])["note"]
+    assert len(note) <= config.GOV_DISCLOSURE_NOTE_MAX
+    # Unlimited duration -- NULL active_through_week, same as loser_flag.
+    assert row["active_through_week"] is None
+    assert 1 in effects.active_team_ids(conn, "waiver_disclosure_mandate", 99)
+    print("ok: waiver_disclosure_mandate bounds (note required+capped, unknown "
+          "team rejected, unlimited duration)")
+
+
 def test_late_fee_bounds():
     conn = _seed()
     # Rejections: out-of-range amount, missing/unknown/self opponent.
@@ -800,6 +821,7 @@ def main():
     test_duration_and_loser_bounds()
     test_chat_mute_bounds()
     test_grievance_dance_mandate_bounds()
+    test_waiver_disclosure_mandate_bounds()
     test_late_fee_bounds()
     test_waiver_forfeit_bounds()
     test_propose_sanitizes_and_locks()

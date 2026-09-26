@@ -35,6 +35,14 @@ What takes effect when:
     grievances" aren't a tracked game object, so the commissioner judges
     compliance by hand each week (Bylaw #14: non-compliance is a separate,
     manually-enacted ``waiver_backseat``/``faab_adjust`` penalty).
+  * ``waiver_disclosure_mandate`` stores a display/compliance flag immediately,
+    same shape as ``loser_flag`` (an ``active_through_week`` of NULL = always
+    active, i.e. unlimited duration until the commissioner lifts it). "Publicly
+    disclosing in the group chat before a waiver claim" isn't a tracked game
+    object either, so like ``grievance_dance_mandate`` there's no mechanical
+    enforcement hook -- the commissioner judges compliance by hand, and
+    non-disclosure is a separate, manually-enacted penalty (e.g.
+    ``waiver_forfeit`` or ``faab_adjust``), same pattern (Bylaw #16).
 
 The model never reaches this code: a GM's bylaw is free text, and the
 commissioner -- a human -- chooses which effect (if any) to apply. This module
@@ -260,6 +268,34 @@ def _a_waiver_forfeit(conn, team_id, p, bylaw_id):
             f"for jumping their priority window{capped}")
 
 
+# --- effect: waiver_disclosure_mandate (display / compliance flag) ---------
+# Bylaw #16: a GM required to publicly disclose (post to the group chat) before
+# submitting any waiver claim. Same shape as loser_flag -- an immediate,
+# unlimited-duration flag with no mechanical enforcement hook, since a
+# real-world chat disclosure isn't a tracked game object. Non-disclosure is
+# judged by hand and enacted separately as its own penalty (e.g.
+# waiver_forfeit or faab_adjust).
+
+def _v_waiver_disclosure(conn, team_id, p):
+    if _team(conn, team_id) is None:
+        return False, "no such team"
+    if not sanitize(p.get("note", ""), config.GOV_DISCLOSURE_NOTE_MAX):
+        return False, "note required"
+    return True, ""
+
+
+def _a_waiver_disclosure(conn, team_id, p, bylaw_id):
+    note = sanitize(p.get("note", ""), config.GOV_DISCLOSURE_NOTE_MAX)
+    conn.execute(
+        "INSERT INTO team_effects(team_id, effect_type, params_json, "
+        "active_through_week, bylaw_id) VALUES(?,?,?,?,?)",
+        (team_id, "waiver_disclosure_mandate", json.dumps({"note": note}),
+         None, bylaw_id))
+    t = _team(conn, team_id)
+    return (f'{t["team_name"]} must publicly disclose in the group chat before '
+            f'any waiver claim ("{note}") -- unlimited duration until lifted')
+
+
 # --- registry ---------------------------------------------------------------
 
 # effect_type -> (validate(conn, team_id, params)->(ok,err),
@@ -281,6 +317,7 @@ EFFECTS = {
     "waiver_forfeit":  (_v_waiver_forfeit, _a_waiver_forfeit),
     "grievance_dance_mandate": (_v_weeks(config.GOV_DANCE_MANDATE_MAX_WEEKS),
                         _a_duration("grievance_dance_mandate")),
+    "waiver_disclosure_mandate": (_v_waiver_disclosure, _a_waiver_disclosure),
 }
 
 # Human/model-facing metadata for each effect, used by the commissioner's
@@ -347,6 +384,15 @@ EFFECT_META = {
                 "enacted separately, e.g. as waiver_backseat or faab_adjust)",
         "params": {"weeks": ("int",
                    f"integer 1 to {config.GOV_DANCE_MANDATE_MAX_WEEKS}")},
+    },
+    "waiver_disclosure_mandate": {
+        "desc": "flag one team as required to publicly disclose in the group "
+                "chat before submitting any waiver claim, for an unlimited "
+                "duration until lifted (Bylaw #16: non-disclosure is judged "
+                "by hand and enacted separately, e.g. as waiver_forfeit or "
+                "faab_adjust)",
+        "params": {"note": ("str",
+                   f"short text note, <= {config.GOV_DISCLOSURE_NOTE_MAX} chars")},
     },
 }
 
