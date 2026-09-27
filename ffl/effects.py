@@ -35,6 +35,13 @@ What takes effect when:
     grievances" aren't a tracked game object, so the commissioner judges
     compliance by hand each week (Bylaw #14: non-compliance is a separate,
     manually-enacted ``waiver_backseat``/``faab_adjust`` penalty).
+  * ``waiver_priority_swap`` records a ``team_effects`` row on the violating
+    team naming a specific wronged opponent, active for exactly one waiver
+    period (Bylaw #18). Its enforcement hook lives in
+    ``ffl/market.py:_waiver_priority_key`` -- unlike ``waiver_backseat``
+    (which demotes a team against every tie), this only demotes the violator
+    in a tie against that one named opponent, and only while that opponent
+    also has a live claim that same period.
 
 The model never reaches this code: a GM's bylaw is free text, and the
 commissioner -- a human -- chooses which effect (if any) to apply. This module
@@ -85,6 +92,23 @@ def active_team_ids(conn, effect_type: str, week: int) -> set:
         "(active_through_week IS NULL OR active_through_week >= ?)",
         (effect_type, week)).fetchall()
     return {r["team_id"] for r in rows}
+
+
+def waiver_priority_swap_map(conn, week: int) -> dict:
+    """violator team_id -> set(wronged opponent team_id) for currently-active
+    waiver_priority_swap rows (Bylaw #18). Read side for the waiver
+    enforcement hook: a violator only loses a tie against these SPECIFIC
+    opponents, not everyone (contrast with waiver_backseat's active_team_ids,
+    which is a blanket per-team flag)."""
+    rows = conn.execute(
+        "SELECT team_id, params_json FROM team_effects WHERE effect_type=? "
+        "AND active_through_week >= ?",
+        ("waiver_priority_swap", week)).fetchall()
+    out: dict = {}
+    for r in rows:
+        opp_id = json.loads(r["params_json"])["opponent_team_id"]
+        out.setdefault(r["team_id"], set()).add(opp_id)
+    return out
 
 
 # --- effect: faab_adjust ----------------------------------------------------
@@ -260,6 +284,42 @@ def _a_waiver_forfeit(conn, team_id, p, bylaw_id):
             f"for jumping their priority window{capped}")
 
 
+# --- effect: waiver_priority_swap (duration, targeted at one opponent) ------
+# Bylaw #18: a GM who wins a waiver claim by less than $2 forfeits their next
+# Sunday's first-waiver-priority tie to the specific claimant they beat. Unlike
+# waiver_forfeit (an immediate FAAB transfer for a *different* infraction --
+# jumping someone else's declared priority window), this doesn't move any FAAB;
+# it records who owes tie-priority to whom, for exactly one waiver period, and
+# the enforcement hook (ffl/market.py:_waiver_priority_key) reads it back.
+
+def _v_waiver_priority_swap(conn, team_id, p):
+    if _team(conn, team_id) is None:
+        return False, "no such team"
+    opp_name = str(p.get("opponent", "")).strip()
+    if not opp_name:
+        return False, "opponent required"
+    opp_id = team_id_by_name(conn, opp_name)
+    if opp_id is None:
+        return False, f"no such opponent team {opp_name!r}"
+    if opp_id == team_id:
+        return False, "opponent must be a different team"
+    return True, ""
+
+
+def _a_waiver_priority_swap(conn, team_id, p, bylaw_id):
+    t = _team(conn, team_id)
+    opp_id = team_id_by_name(conn, str(p["opponent"]).strip())
+    opp = _team(conn, opp_id)
+    through = _current_week(conn) + config.GOV_WAIVER_PRIORITY_SWAP_WEEKS
+    conn.execute(
+        "INSERT INTO team_effects(team_id, effect_type, params_json, "
+        "active_through_week, bylaw_id) VALUES(?,?,?,?,?)",
+        (team_id, "waiver_priority_swap",
+         json.dumps({"opponent_team_id": opp_id}), through, bylaw_id))
+    return (f"{t['team_name']} forfeits next waiver period's tie priority to "
+            f"{opp['team_name']} (through week {through})")
+
+
 # --- registry ---------------------------------------------------------------
 
 # effect_type -> (validate(conn, team_id, params)->(ok,err),
@@ -281,6 +341,7 @@ EFFECTS = {
     "waiver_forfeit":  (_v_waiver_forfeit, _a_waiver_forfeit),
     "grievance_dance_mandate": (_v_weeks(config.GOV_DANCE_MANDATE_MAX_WEEKS),
                         _a_duration("grievance_dance_mandate")),
+    "waiver_priority_swap": (_v_waiver_priority_swap, _a_waiver_priority_swap),
 }
 
 # Human/model-facing metadata for each effect, used by the commissioner's
@@ -347,6 +408,15 @@ EFFECT_META = {
                 "enacted separately, e.g. as waiver_backseat or faab_adjust)",
         "params": {"weeks": ("int",
                    f"integer 1 to {config.GOV_DANCE_MANDATE_MAX_WEEKS}")},
+    },
+    "waiver_priority_swap": {
+        "desc": "forfeit one team's next waiver period's first-tie-priority "
+                "to a named opponent (Bylaw #18: a GM who wins a waiver claim "
+                "by less than $2 owes that tie priority to the claimant they "
+                "beat, for one waiver period)",
+        "params": {
+            "opponent": ("str", "wronged team name who receives the tie priority"),
+        },
     },
 }
 

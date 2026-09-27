@@ -201,6 +201,36 @@ def test_waiver_forfeit_bounds():
           "violator floored at 0)")
 
 
+def test_waiver_priority_swap_bounds():
+    conn = _seed()
+    # Rejections: missing/unknown/self opponent, unknown team.
+    ok, _ = effects.validate_effect(conn, "waiver_priority_swap", 1, {})
+    assert not ok, "missing opponent should be rejected"
+    ok, _ = effects.validate_effect(conn, "waiver_priority_swap", 1,
+                                    {"opponent": "Nobody FC"})
+    assert not ok, "unknown opponent should be rejected"
+    ok, _ = effects.validate_effect(conn, "waiver_priority_swap", 1,
+                                    {"opponent": "Team 1"})
+    assert not ok, "opponent same as violator should be rejected"
+    ok, _ = effects.validate_effect(conn, "waiver_priority_swap", 999,
+                                    {"opponent": "Team 2"})
+    assert not ok, "unknown team should be rejected"
+
+    # Apply within range: records a one-period tie-priority debt, no FAAB moves.
+    ok, msg = effects.apply_effect(conn, "waiver_priority_swap", 1,
+                                   {"opponent": "Team 2"})
+    assert ok, msg
+    row = conn.execute("SELECT params_json, active_through_week FROM team_effects "
+                       "WHERE team_id=1 AND effect_type='waiver_priority_swap'"
+                       ).fetchone()
+    assert json.loads(row["params_json"]) == {"opponent_team_id": 2}
+    assert row["active_through_week"] == 2   # current_week 1 + 1 waiver period
+    assert conn.execute("SELECT faab_remaining FROM teams WHERE team_id IN (1,2)"
+                        ).fetchall()[0][0] == 100, "no FAAB should move"
+    print("ok: waiver_priority_swap bounds (opponent required/valid/distinct, "
+          "one-period record, no FAAB transfer)")
+
+
 # --- propose / vote / tally -------------------------------------------------
 
 def _stub_propose(title="Tax the hoarders", pitch="They sit on FAAB like dragons."):
@@ -637,6 +667,39 @@ def test_waiver_backseat_ordering():
     print("ok: waiver_backseat loses ties but not higher bids")
 
 
+def test_waiver_priority_swap_ordering():
+    conn = _seed()
+    # Team 2 (draft_slot 2, would normally win any tie over a higher-numbered
+    # team) beat Team 5 by a sub-$2 margin -- Bylaw #18 says Team 2 forfeits
+    # this waiver period's tie priority specifically to Team 5.
+    effects.apply_effect(conn, "waiver_priority_swap", 2, {"opponent": "Team 5"})
+
+    key = market._waiver_priority_key(conn, week=1, claim_team_ids={2, 5})
+    tie = sorted([{"team_id": 2, "faab": 10}, {"team_id": 5, "faab": 10}], key=key)
+    assert [c["team_id"] for c in tie] == [5, 2], \
+        "violator must lose the tie to the specific wronged team, even though " \
+        "its earlier draft slot would otherwise win"
+
+    higher = sorted([{"team_id": 5, "faab": 10}, {"team_id": 2, "faab": 20}], key=key)
+    assert higher[0]["team_id"] == 2, "a higher bid still beats the penalty"
+
+    # An uninvolved third team's tie with the violator is unaffected -- the
+    # swap only bites against the one named opponent, and only if that
+    # opponent is also claiming this period.
+    untouched_key = market._waiver_priority_key(conn, week=1, claim_team_ids={2, 4})
+    untouched = sorted([{"team_id": 2, "faab": 10}, {"team_id": 4, "faab": 10}],
+                       key=untouched_key)
+    assert untouched[0]["team_id"] == 2, "no demotion when the wronged team isn't in this run"
+
+    # Expired after the one waiver period (current_week 1 -> through week 2).
+    expired_key = market._waiver_priority_key(conn, week=3, claim_team_ids={2, 5})
+    expired = sorted([{"team_id": 2, "faab": 10}, {"team_id": 5, "faab": 10}],
+                     key=expired_key)
+    assert expired[0]["team_id"] == 2, "tie unaffected once the swap expires"
+    print("ok: waiver_priority_swap demotes the violator only against the named "
+          "opponent, only while contending, and only for one waiver period")
+
+
 # --- kicker_flex_lock (Bylaw #5: Litigation Nation Lineup Lockout Act) ------
 
 _MINI_ROSTER = ["QB", "RB", "RB", "RB", "WR", "WR", "TE", "K", "DST"]
@@ -802,6 +865,7 @@ def main():
     test_grievance_dance_mandate_bounds()
     test_late_fee_bounds()
     test_waiver_forfeit_bounds()
+    test_waiver_priority_swap_bounds()
     test_propose_sanitizes_and_locks()
     test_vote_pass()
     test_vote_tie_fails()
@@ -828,6 +892,7 @@ def main():
     test_tick_step_never_raises()
     test_active_window_and_freeze_blocks_trades()
     test_waiver_backseat_ordering()
+    test_waiver_priority_swap_ordering()
     test_kicker_flex_lock_forces_kicker_to_flex()
     test_kicker_flex_lock_bounds()
     test_kicker_flex_lock_enforcement_hook()

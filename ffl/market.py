@@ -417,17 +417,24 @@ def decide_waiver(conn, team_id, fa_list, proj_map) -> dict | None:
             "message": str(data.get("message", "")).strip()}
 
 
-def _waiver_priority_key(conn, week):
+def _waiver_priority_key(conn, week, claim_team_ids=frozenset()):
     """Sort key for resolving waiver claims. Lower sorts first (= higher
     priority): highest bid wins; among equal bids a governance waiver_backseat
-    penalty drops that team behind everyone else; then most FAAB remaining; then
-    earliest draft slot. A backseated team with a strictly higher bid still
-    wins -- the penalty only bites on ties."""
+    penalty drops that team behind everyone else; then a waiver_priority_swap
+    (Bylaw #18) drops a team behind the SPECIFIC opponent it owes tie-priority
+    to, if that opponent is also claiming this period; then most FAAB
+    remaining; then earliest draft slot. A backseated/swap-demoted team with a
+    strictly higher bid still wins -- these penalties only bite on ties.
+    `claim_team_ids` is the set of team_ids with a claim in this run, needed to
+    tell whether a swap's named opponent is actually present to be owed."""
     meta = {r["team_id"]: r for r in conn.execute("SELECT * FROM teams")}
     backseat = effects.active_team_ids(conn, "waiver_backseat", week)
+    swaps = effects.waiver_priority_swap_map(conn, week)
 
     def key(c):
-        return (-c["faab"], 1 if c["team_id"] in backseat else 0,
+        owed_to = swaps.get(c["team_id"], set())
+        demoted = 1 if owed_to & claim_team_ids else 0
+        return (-c["faab"], 1 if c["team_id"] in backseat else 0, demoted,
                 -meta[c["team_id"]]["faab_remaining"], meta[c["team_id"]]["draft_slot"])
     return key
 
@@ -453,9 +460,10 @@ def run_waivers(conn, week: int = None, team_ids=None, use_gate: bool = True,
             claims.append(claim)
 
     # Priority: highest bid, then (governance) a waiver_backseat penalty that
-    # drops a team to the back of every tie, then most FAAB remaining, then
+    # drops a team to the back of every tie, then a waiver_priority_swap that
+    # drops a team behind one named opponent, then most FAAB remaining, then
     # earliest draft slot.
-    claims.sort(key=_waiver_priority_key(conn, week))
+    claims.sort(key=_waiver_priority_key(conn, week, {c["team_id"] for c in claims}))
 
     taken, results = set(), []
     for c in claims:
