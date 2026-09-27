@@ -126,6 +126,13 @@ GOV_WAIVER_FORFEIT_MAX = 15
 # text for a bounded number of weeks; non-compliance is a separate, manual
 # waiver_backseat/faab_adjust penalty, not part of this flag).
 GOV_DANCE_MANDATE_MAX_WEEKS = 4
+# waiver_priority_swap duration (Bylaw #18: a GM who wins a waiver claim by
+# less than $2 forfeits their next Sunday's first-waiver-priority tie to the
+# claimant they beat). The bylaw text itself caps this at swapping priority
+# for one waiver period per triggering event, so -- same shortest-grain
+# reasoning as GOV_CHAT_MUTE_MAX_WEEKS/GOV_WORST_LINEUP_MAX_WEEKS above -- this
+# stays fixed at exactly one.
+GOV_WAIVER_PRIORITY_SWAP_WEEKS = 1
 
 # --- Draft-day chatter -----------------------------------------------------
 # Per-pick probability that a notable pick draws live reactions from a few
